@@ -1,0 +1,38 @@
+export ZOPEN_TYPE="GIT"
+
+export ZOPEN_GIT_URL="https://github.com/php/php-src.git"
+export ZOPEN_GIT_BRANCH="PHP-8.1.11"
+export ZOPEN_GIT_DEPS="git make m4 autoconf perl libtool automake bison re2c"
+
+export ZOPEN_TARBALL_URL="https://www.php.net/distributions/php-8.1.11.tar.gz"
+export ZOPEN_TARBALL_DEPS="curl make gzip"
+if [ "${ZOPEN_TYPE}" = "TARBALL" ]; then
+  export ZOPEN_BOOTSTRAP=skip
+  export ZOPEN_GIT_SETUP='N'
+else
+  export ZOPEN_BOOTSTRAP="./buildconf"
+  export ZOPEN_CONFIGURE="./configure"
+fi
+export ZOPEN_CHECK_OPTS="test"
+
+zopen_check_results()
+{
+  dir="$1"
+  pfx="$2"
+  chk="$1/$2_check.log"
+
+  # Echo the following information to guage build health
+
+  totalTests=$(grep '# TOTAL: ' ${chk} | awk ' { print $3; }')
+  actualFailures=$(grep '# FAIL: ' ${chk} | awk ' { print $3; }')
+  expectedFailures=0
+
+  echo "actualFailures:${actualFailures}"
+  echo "expectedFailures:${expectedFailures}"
+  echo "totalTests:${totalTests}"
+}
+
+zopen_append_to_env()
+{
+  # echo envars outside of PATH, MANPATH, LIBPATH
+}
