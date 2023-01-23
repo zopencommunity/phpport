@@ -1,3 +1,3 @@
-patchport
+PHP
 
-Patch takes a patch file containing a difference listing produced by the diff program and applies those differences to one or more original files, producing patched versions.
+PHP is an open source scripting language that's widely used for web development and can be embedded into HTML.
