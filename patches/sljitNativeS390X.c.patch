@@ -1,0 +1,34 @@
+diff --git a/ext/pcre/pcre2lib/sljit/sljitNativeS390X.c b/ext/pcre/pcre2lib/sljit/sljitNativeS390X.c
+index 716491e..d80efdf 100644
+--- a/ext/pcre/pcre2lib/sljit/sljitNativeS390X.c
++++ b/ext/pcre/pcre2lib/sljit/sljitNativeS390X.c
+@@ -24,7 +24,6 @@
+  * ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+  */
+ 
+-#include <sys/auxv.h>
+ 
+ #ifdef __ARCH__
+ #define ENABLE_STATIC_FACILITY_DETECTION 1
+@@ -312,6 +311,8 @@ static SLJIT_INLINE int have_facility_static(facility_bit x)
+ 	return 0;
+ }
+ 
++#ifndef __MVS__
++#include <sys/auxv.h>
+ static SLJIT_INLINE unsigned long get_hwcap()
+ {
+ 	static unsigned long hwcap = 0;
+@@ -329,6 +330,12 @@ static SLJIT_INLINE int have_stfle()
+ 
+ 	return (get_hwcap() & HWCAP_S390_STFLE);
+ }
++#else
++static SLJIT_INLINE int have_stfle()
++{
++  return 1;
++}
++#endif
+ 
+ /* Report whether the given facility is available. This function always
+    performs a runtime check. */

@@ -2,7 +2,7 @@ export ZOPEN_TYPE="TARBALL"
 
 export ZOPEN_GIT_URL="https://github.com/php/php-src.git"
 export ZOPEN_GIT_BRANCH="PHP-8.1.11"
-export ZOPEN_GIT_DEPS="git make m4 autoconf perl libtool automake bison re2c"
+export ZOPEN_GIT_DEPS="git make m4 autoconf perl libtool automake bison re2c zoslib sed diffutils coreutils"
 
 export ZOPEN_TARBALL_URL="https://www.php.net/distributions/php-8.1.11.tar.gz"
 export ZOPEN_TARBALL_DEPS="curl make gzip zoslib libxml2 sqlite"
@@ -12,6 +12,7 @@ if [ "${ZOPEN_TYPE}" = "TARBALL" ]; then
   export ZOPEN_GIT_SETUP='N'
   LIBXML_CFLAGS=
   LIBXML_LIBS=
+  export ZOPEN_EXTRA_CONFIGURE_OPTS='--disable-opcache --disable-phar --without-pear --without-pcre-jit'
 else
   export ZOPEN_BOOTSTRAP="./buildconf"
   export ZOPEN_CONFIGURE="./configure"
