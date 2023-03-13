@@ -1,0 +1,15 @@
+diff --git a/ext/standard/net.c b/ext/standard/net.c
+index c549bfbc..e425b7e7 100644
+--- a/ext/standard/net.c
++++ b/ext/standard/net.c
+@@ -47,6 +47,10 @@
+ # include <netdb.h>
+ #endif
+ 
++#ifndef NI_MAXHOST
++  #define NI_MAXHOST 1025
++#endif
++
+ PHPAPI zend_string* php_inet_ntop(const struct sockaddr *addr) {
+ 	socklen_t addrlen = sizeof(struct sockaddr_in);
+ 

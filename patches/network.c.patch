@@ -1,0 +1,17 @@
+diff --git a/main/network.c b/main/network.c
+index 1ad7e370..4997a3fe 100644
+--- a/main/network.c
++++ b/main/network.c
+@@ -775,6 +775,12 @@ PHPAPI php_socket_t php_network_accept_incoming(php_socket_t srvsock,
+ }
+ /* }}} */
+ 
++#ifdef __MVS__
++#define timercmp(tvp, uvp, cmp) \
++        ((tvp)->tv_sec cmp (uvp)->tv_sec || \
++        (tvp)->tv_sec == (uvp)->tv_sec && \
++        (tvp)->tv_usec cmp (uvp)->tv_usec)
++#endif 
+ 
+ /* Connect to a remote host using an interruptible connect with optional timeout.
+  * Optionally, the connect can be made asynchronously, which will implicitly

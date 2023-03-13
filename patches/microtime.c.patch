@@ -1,0 +1,13 @@
+diff --git a/ext/standard/microtime.c b/ext/standard/microtime.c
+index ca8643eb..7bb95ca7 100644
+--- a/ext/standard/microtime.c
++++ b/ext/standard/microtime.c
+@@ -125,7 +125,7 @@ PHP_FUNCTION(getrusage)
+ #ifdef PHP_WIN32 /* Windows only implements a limited amount of fields from the rusage struct */
+ 	PHP_RUSAGE_PARA(ru_majflt);
+ 	PHP_RUSAGE_PARA(ru_maxrss);
+-#elif !defined(_OSD_POSIX) && !defined(__HAIKU__)
++#elif !defined(_OSD_POSIX) && !defined(__HAIKU__) && !defined(__MVS__)
+ 	PHP_RUSAGE_PARA(ru_oublock);
+ 	PHP_RUSAGE_PARA(ru_inblock);
+ 	PHP_RUSAGE_PARA(ru_msgsnd);

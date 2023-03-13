@@ -1,0 +1,130 @@
+diff --git a/Zend/zend_alloc.c b/Zend/zend_alloc.c
+index dfdc4e2b..e624d6d5 100644
+--- a/Zend/zend_alloc.c
++++ b/Zend/zend_alloc.c
+@@ -101,6 +101,78 @@ static size_t _real_page_size = ZEND_MM_PAGE_SIZE;
+ # endif
+ #endif
+ 
++#ifdef __MVS__
++
++#define MMAP_USES_DEV_ZERO 0
++#define MMAP_USES_MALLOC   1
++#define MMAP_USES_ASM_HACK 2
++
++typedef struct _mem_chunk {
++    void* mem_alloc;
++    void* mem_align;
++    struct _mem_chunk* next;
++} mem_chunk;
++
++static mem_chunk mch_tail = {NULL, NULL, NULL}; /* list tail */
++static mem_chunk* mch_list = &mch_tail;         /* list head */
++static mem_chunk* mem_chunk_add(void* m_alloc, void* m_align);
++static void* mem_chunk_find(void* m_align);
++static void* mem_chunk_delete(void* m_align);
++
++static mem_chunk* mem_chunk_add(void* m_alloc, void* m_align)
++{
++    mem_chunk* tmp = (mem_chunk*)malloc(sizeof(mem_chunk));
++    if (tmp == NULL)
++    {
++#if ZEND_MM_ERROR
++	fprintf(stderr, "\nmem_chunk_add: malloc() failed: [%d] %s\n", errno, strerror(errno));
++#endif
++        return NULL;
++    }
++    tmp->mem_alloc = m_alloc;
++    tmp->mem_align = m_align;
++    tmp->next = mch_list;
++    mch_list = tmp;
++    return tmp;
++}
++
++static void* mem_chunk_find(void* m_align)
++{
++    mem_chunk* mch;
++    for (mch = mch_list; mch->next != NULL; mch = mch->next)
++    {
++        if (mch->mem_align == m_align)
++            break;
++    }
++    return mch->mem_alloc;
++}
++
++static void* mem_chunk_delete(void* m_align)
++{
++    mem_chunk* mch;
++    mem_chunk* mch_prev = mch_list;
++    void* m_alloc = NULL;
++    for (mch = mch_list; mch->next != NULL; mch = mch->next)
++    {
++        if (mch->mem_align == m_align)
++        {
++            if (mch == mch_list)
++            {
++                mch_list = mch->next;
++            }
++            else
++            {
++                mch_prev->next = mch->next;
++            }
++            m_alloc = mch->mem_alloc;
++            free(mch);
++            break;
++        }
++        mch_prev = mch;
++    }
++    return m_alloc;
++}
++#endif /* __MVS__ */
+ #ifndef REAL_PAGE_SIZE
+ # define REAL_PAGE_SIZE ZEND_MM_PAGE_SIZE
+ #endif
+@@ -419,6 +491,13 @@ stderr_last_error(char *msg)
+ #ifndef HAVE_MREMAP
+ static void *zend_mm_mmap_fixed(void *addr, size_t size)
+ {
++#ifdef __MVS__
++        void* ptr = NULL; 
++#if ZEND_MM_ERROR
++	fprintf(stderr, "\nzend_mm_mmap_fixed() shouldn't be used!\n");
++#endif
++        return NULL;
++#else
+ #ifdef _WIN32
+ 	return VirtualAlloc(addr, size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+ #else
+@@ -428,6 +507,7 @@ static void *zend_mm_mmap_fixed(void *addr, size_t size)
+ #endif
+ 	/* MAP_FIXED leads to discarding of the old mapping, so it can't be used. */
+ 	void *ptr = mmap(addr, size, PROT_READ | PROT_WRITE, flags /*| MAP_POPULATE | MAP_HUGETLB*/, ZEND_MM_FD, 0);
++#endif /* __MVS */
+ 
+ 	if (ptr == MAP_FAILED) {
+ #if ZEND_MM_ERROR && !defined(MAP_EXCL)
+@@ -471,7 +551,24 @@ static void *zend_mm_mmap(size_t size)
+ 	}
+ #endif
+ 
++#ifdef __MVS__
++	ptr = malloc(size);
++	if (ptr == NULL) {
++#if ZEND_MM_ERROR
++		fprintf(stderr, "\nmalloc() failed: [%d] %s\n", errno, strerror(errno));
++#endif
++		return NULL;
++	}
++        memset(ptr, 0, size);
++        if (mem_chunk_add(ptr, ptr) == NULL)
++        {
++            free(ptr);
++            return NULL;
++        }
++	return ptr;
++#else
+ 	ptr = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, ZEND_MM_FD, 0);
++#endif /* __MVS__ */
+ 
+ 	if (ptr == MAP_FAILED) {
+ #if ZEND_MM_ERROR
