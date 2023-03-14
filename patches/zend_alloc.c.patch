@@ -1,5 +1,5 @@
 diff --git a/Zend/zend_alloc.c b/Zend/zend_alloc.c
-index dfdc4e2b..86ed1d4a 100644
+index dfdc4e2b..c571713a 100644
 --- a/Zend/zend_alloc.c
 +++ b/Zend/zend_alloc.c
 @@ -101,6 +101,78 @@ static size_t _real_page_size = ZEND_MM_PAGE_SIZE;
@@ -128,7 +128,7 @@ index dfdc4e2b..86ed1d4a 100644
  
  	if (ptr == MAP_FAILED) {
  #if ZEND_MM_ERROR
-@@ -491,6 +588,19 @@ static void zend_mm_munmap(void *addr, size_t size)
+@@ -491,6 +588,20 @@ static void zend_mm_munmap(void *addr, size_t size)
  		stderr_last_error("VirtualFree() failed");
  #endif
  	}
@@ -145,10 +145,11 @@ index dfdc4e2b..86ed1d4a 100644
 +#if ZEND_MM_ERROR
 +		fprintf(stderr, "\nfree(): no adress found!\n");
 +#endif
++        }
  #else
  	if (munmap(addr, size) != 0) {
  #if ZEND_MM_ERROR
-@@ -498,6 +608,7 @@ static void zend_mm_munmap(void *addr, size_t size)
+@@ -498,6 +609,7 @@ static void zend_mm_munmap(void *addr, size_t size)
  #endif
  	}
  #endif
