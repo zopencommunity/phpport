@@ -1,11 +1,11 @@
 diff --git a/Zend/zend_alloc.c b/Zend/zend_alloc.c
-index dfdc4e2b..c571713a 100644
+index edcf1192..1745fc38 100644
 --- a/Zend/zend_alloc.c
 +++ b/Zend/zend_alloc.c
 @@ -101,6 +101,78 @@ static size_t _real_page_size = ZEND_MM_PAGE_SIZE;
+ #    define MAP_HUGETLB MAP_ALIGNED_SUPER
  # endif
  #endif
- 
 +#ifdef __MVS__
 +
 +#define MMAP_USES_DEV_ZERO 0
@@ -78,35 +78,69 @@ index dfdc4e2b..c571713a 100644
 +    return m_alloc;
 +}
 +#endif /* __MVS__ */
+ 
  #ifndef REAL_PAGE_SIZE
  # define REAL_PAGE_SIZE ZEND_MM_PAGE_SIZE
- #endif
-@@ -419,6 +491,13 @@ stderr_last_error(char *msg)
- #ifndef HAVE_MREMAP
- static void *zend_mm_mmap_fixed(void *addr, size_t size)
+@@ -419,6 +491,7 @@ stderr_last_error(char *msg)
+ 
+ static void zend_mm_munmap(void *addr, size_t size)
  {
-+#ifdef __MVS__
-+        void* ptr = NULL; 
-+#if ZEND_MM_ERROR
-+	fprintf(stderr, "\nzend_mm_mmap_fixed() shouldn't be used!\n");
-+#endif
-+        return NULL;
-+#else
++
  #ifdef _WIN32
- 	return VirtualAlloc(addr, size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+ 	if (VirtualFree(addr, 0, MEM_RELEASE) == 0) {
+ 		/** ERROR_INVALID_ADDRESS is expected when addr is not range start address */
+@@ -446,11 +519,26 @@ static void zend_mm_munmap(void *addr, size_t size)
+ 		}
+ 	}
  #else
-@@ -428,6 +507,7 @@ static void *zend_mm_mmap_fixed(void *addr, size_t size)
++#ifdef __MVS__
++  /* TODO: test this code! */
++  void* addr_alloc = mem_chunk_delete(addr);
++  if (addr_alloc != NULL)
++  {
++    free(addr_alloc);
++  }
++  else
++  {
++#if ZEND_MM_ERROR
++		fprintf(stderr, "\nfree(): no adress found!\n");
++#endif
++  }
++#else 
+ 	if (munmap(addr, size) != 0) {
+ #if ZEND_MM_ERROR
+ 		fprintf(stderr, "\nmunmap() failed: [%d] %s\n", errno, strerror(errno));
+ #endif
+ 	}
++#endif /* __MVS__ */
+ #endif
+ }
+ 
+@@ -473,6 +561,10 @@ static void *zend_mm_mmap_fixed(void *addr, size_t size)
+ 	ZEND_ASSERT(ptr == addr);
+ 	return ptr;
+ #else
++
++#ifdef __MVS__
++  void* ptr = NULL;
++#else
+ 	int flags = MAP_PRIVATE | MAP_ANON;
+ #if defined(MAP_EXCL)
+ 	flags |= MAP_FIXED | MAP_EXCL;
+@@ -481,6 +573,7 @@ static void *zend_mm_mmap_fixed(void *addr, size_t size)
  #endif
  	/* MAP_FIXED leads to discarding of the old mapping, so it can't be used. */
  	void *ptr = mmap(addr, size, PROT_READ | PROT_WRITE, flags /*| MAP_POPULATE | MAP_HUGETLB*/, ZEND_MM_FD, 0);
-+#endif /* __MVS */
++#endif
  
  	if (ptr == MAP_FAILED) {
- #if ZEND_MM_ERROR && !defined(MAP_EXCL)
-@@ -471,7 +551,24 @@ static void *zend_mm_mmap(size_t size)
+ #if ZEND_MM_ERROR && !defined(MAP_EXCL) && !defined(MAP_TRYFIXED)
+@@ -527,8 +620,24 @@ static void *zend_mm_mmap(size_t size)
+ 		}
  	}
  #endif
- 
+-
+-	ptr = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, ZEND_MM_FD, 0);
 +#ifdef __MVS__
 +	ptr = malloc(size);
 +	if (ptr == NULL) {
@@ -115,45 +149,16 @@ index dfdc4e2b..c571713a 100644
 +#endif
 +		return NULL;
 +	}
-+        memset(ptr, 0, size);
-+        if (mem_chunk_add(ptr, ptr) == NULL)
-+        {
-+            free(ptr);
-+            return NULL;
-+        }
++  memset(ptr, 0, size);
++  if (mem_chunk_add(ptr, ptr) == NULL)
++  {
++    free(ptr);
++    return NULL;
++  }
 +	return ptr;
 +#else
- 	ptr = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, ZEND_MM_FD, 0);
++ 	ptr = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, ZEND_MM_FD, 0);
 +#endif /* __MVS__ */
  
  	if (ptr == MAP_FAILED) {
  #if ZEND_MM_ERROR
-@@ -491,6 +588,20 @@ static void zend_mm_munmap(void *addr, size_t size)
- 		stderr_last_error("VirtualFree() failed");
- #endif
- 	}
-+#else
-+#ifdef __MVS__
-+        /* TODO: test this code! */
-+        void* addr_alloc = mem_chunk_delete(addr);
-+        if (addr_alloc != NULL)
-+        {
-+	    free(addr_alloc);
-+        }
-+        else
-+        {
-+#if ZEND_MM_ERROR
-+		fprintf(stderr, "\nfree(): no adress found!\n");
-+#endif
-+        }
- #else
- 	if (munmap(addr, size) != 0) {
- #if ZEND_MM_ERROR
-@@ -498,6 +609,7 @@ static void zend_mm_munmap(void *addr, size_t size)
- #endif
- 	}
- #endif
-+#endif /* __MVS__ */
- }
- 
- /***********/

@@ -7,15 +7,19 @@ export ZOPEN_DEV_BRANCH="php-${PHP_VERSION}"
 export ZOPEN_DEV_DEPS="git make m4 autoconf perl libtool automake bison re2c zoslib sed diffutils coreutils libiconv"
 
 export ZOPEN_STABLE_URL="https://www.php.net/distributions/php-${PHP_VERSION}.tar.gz"
-export ZOPEN_STABLE_DEPS="curl make gzip zoslib libxml2 sqlite libiconv sed"
+export ZOPEN_STABLE_DEPS="curl make gzip zoslib libxml2 sqlite libiconv sed coreutils"
+
+export ZOPEN_COMP="CLANG"
 
 if [ "${ZOPEN_BUILD_LINE}" = "STABLE" ]; then
   export ZOPEN_BOOTSTRAP=skip
-#  export ZOPEN_GIT_SETUP='N'
   LIBXML_CFLAGS=
   LIBXML_LIBS=
   export ZOPEN_EXTRA_CONFIGURE_OPTS='--disable-opcache --disable-phar --without-pear --without-pcre-jit'
   export ZOPEN_COMP='CLANG'
+
+# Temporary work-around waiting for fopen_ascii function in zoslib so that configure works
+  export ZOPEN_EXTRA_CFLAGS="-DZEND_MM_ALIGNMENT='(size_t)8' -DZEND_MM_ALIGNMENT_LOG2='(size_t)3' -DZEND_MM_NEED_EIGHT_BYTE_REALIGNMENT=0"
 else
   export ZOPEN_BOOTSTRAP="./buildconf"
   export ZOPEN_CONFIGURE="./configure"

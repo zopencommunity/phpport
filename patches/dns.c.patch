@@ -1,14 +1,14 @@
 diff --git a/ext/standard/dns.c b/ext/standard/dns.c
-index 6d22e644..98631d21 100644
+index d229b998..5d64b756 100644
 --- a/ext/standard/dns.c
 +++ b/ext/standard/dns.c
 @@ -173,6 +173,9 @@ PHP_FUNCTION(gethostbyaddr)
  static zend_string *php_gethostbyaddr(char *ip)
  {
- #if HAVE_IPV6 && HAVE_INET_PTON
-+#ifndef NI_MAXHOST
-+  #define NI_MAXHOST 1025
-+#endif
+ #if defined(HAVE_IPV6) && defined(HAVE_INET_PTON)
++# ifndef NI_MAXHOST
++   #define NI_MAXHOST 1025
++# endif
  	struct sockaddr_in sa4;
  	struct sockaddr_in6 sa6;
  	char out[NI_MAXHOST];
