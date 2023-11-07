@@ -38,7 +38,7 @@ zopen_check_results()
   actualPasses=$(grep '1;32mPASS' ${chk} | awk ' { print $3; }' | wc -l)
   actualSkips=$(grep '1;33mSKIP' ${chk} | awk ' { print $3; }' | wc -l)
   actualFailures=$(grep '1;31mFAIL' ${chk} | awk ' { print $3; }' | wc -l)
-  expectedFailures=403 # yes - almost everything fails
+  expectedFailures=111
 
   totalTests=$((actualPasses+actualSkips+actualFailures))
   echo "actualFailures:${actualFailures}"
