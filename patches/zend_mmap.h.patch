@@ -1,0 +1,46 @@
+diff --git a/Zend/zend_mmap.h b/Zend/zend_mmap.h
+index 53eee61a..6c2667ea 100644
+--- a/Zend/zend_mmap.h
++++ b/Zend/zend_mmap.h
+@@ -41,4 +41,41 @@ static zend_always_inline void zend_mmap_set_name(const void *start, size_t len,
+ #endif
+ }
+ 
++#define _XOPEN_SOURCE_EXTENDED 1
++#include <sys/mman.h>
++
++static void* zend_mmap(void *addr, size_t len, int prot, int flags, int fildes, off_t off)
++{
++#ifndef __MVS__
++  return mmap(addr, len, prot, flags, fildes, off);
++#else
++  if (flags & MAP_ANON) {
++    fprintf(stdout, "mmap anonymous to %p of len %zu with prot 0x%x and flags 0x%x filedes:%d, offset:%zu\n", addr, len, prot, flags, fildes, off);
++    int* ptr = calloc(len+4, 1);
++    ptr[0] = 0xDEADBEEF;
++    return &ptr[1];
++  } else {
++    return mmap(addr, len, prot, flags, fildes, off);
++  }
++#endif
++}
++
++static int zend_munmap(void *addr, size_t len)
++{
++#ifndef __MVS__
++  return munmap(addr, len);
++#else
++
++  int* ptr = addr;
++  if (ptr[-1] == 0xDEADBEEF) {
++    fprintf(stdout, "munmap anonymous of %p and %zu\n", addr, len);
++    /* do not free storage - it could be unmapping just 'part' of the mapped storage - memory leak... */
++    /* free(&ptr[-1]); */
++    return 0;
++  } else {
++    return munmap(addr, len);
++  }
++#endif
++}
++
+ #endif /* ZEND_MMAP_H */
