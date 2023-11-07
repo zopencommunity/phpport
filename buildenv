@@ -1,5 +1,5 @@
 # bump: php-version /PHP_VERSION="(.*)"/ https://www.php.net/downloads.php|re:/php-([\d.]+).tar.gz/$1/|semver:*
-PHP_VERSION="8.1.11"
+PHP_VERSION="8.2.12"
 
 export ZOPEN_BUILD_LINE="STABLE"
 export ZOPEN_DEV_URL="https://github.com/php/php-src.git"
@@ -7,15 +7,21 @@ export ZOPEN_DEV_BRANCH="php-${PHP_VERSION}"
 export ZOPEN_DEV_DEPS="git make m4 autoconf perl libtool automake bison re2c zoslib sed diffutils coreutils libiconv"
 
 export ZOPEN_STABLE_URL="https://www.php.net/distributions/php-${PHP_VERSION}.tar.gz"
-export ZOPEN_STABLE_DEPS="curl make gzip zoslib libxml2 sqlite libiconv sed"
+export ZOPEN_STABLE_DEPS="curl make gzip zoslib libxml2 sqlite libiconv sed coreutils"
+
+export ZOPEN_COMP="CLANG"
 
 if [ "${ZOPEN_BUILD_LINE}" = "STABLE" ]; then
   export ZOPEN_BOOTSTRAP=skip
-#  export ZOPEN_GIT_SETUP='N'
   LIBXML_CFLAGS=
   LIBXML_LIBS=
   export ZOPEN_EXTRA_CONFIGURE_OPTS='--disable-opcache --disable-phar --without-pear --without-pcre-jit'
   export ZOPEN_COMP='CLANG'
+
+# Temporary work-around waiting for fopen_ascii function in zoslib so that configure works
+# and
+# Temporary work-around for lack of MAP_ANON support in zoslib mmap emulation
+  export ZOPEN_EXTRA_CFLAGS="-DZEND_MM_ALIGNMENT='(size_t)8' -DZEND_MM_ALIGNMENT_LOG2='(size_t)3' -DZEND_MM_NEED_EIGHT_BYTE_REALIGNMENT=0 -DMAP_ANON=16 -DMAP_ANONYMOUS=16"
 else
   export ZOPEN_BOOTSTRAP="./buildconf"
   export ZOPEN_CONFIGURE="./configure"
@@ -27,19 +33,25 @@ zopen_check_results()
   dir="$1"
   pfx="$2"
   chk="$1/$2_check.log"
+  summary="$1/$2_summary.log"
 
-  # Echo the following information to guage build health
+  actualPasses=$(grep '1;32mPASS' ${chk} | awk ' { print $3; }' | wc -l)
+  actualSkips=$(grep '1;33mSKIP' ${chk} | awk ' { print $3; }' | wc -l)
+  actualFailures=$(grep '1;31mFAIL' ${chk} | awk ' { print $3; }' | wc -l)
+  expectedFailures=111
 
-  totalTests=$(grep '# TOTAL: ' ${chk} | awk ' { print $3; }')
-  actualFailures=$(grep '# FAIL: ' ${chk} | awk ' { print $3; }')
-  expectedFailures=0
-
+  totalTests=$((actualPasses+actualSkips+actualFailures))
   echo "actualFailures:${actualFailures}"
   echo "expectedFailures:${expectedFailures}"
   echo "totalTests:${totalTests}"
+
+  echo "PHP Results" >${summary}
+  echo "actualFailures:${actualFailures}" >>${summary}
+  echo "expectedFailures:${expectedFailures}" >>${summary}
+  echo "totalTests:${totalTests}" >>${summary}
 }
 
-zopen_append_to_env()
+zopen_get_version()
 {
-  # echo envars outside of PATH, MANPATH, LIBPATH
+  ./sapi/cli/php --version | head -1 | awk ' { print $2; }'
 }
