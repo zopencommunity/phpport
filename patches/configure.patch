@@ -1,0 +1,12 @@
+diff --git a/configure b/configure
+index dcf5275d..a1c63789 100755
+--- a/configure
++++ b/configure
+@@ -85439,7 +85439,6 @@ if test "$ac_cv_lib_crypt_crypt" = "yes"; then
+   EXTRA_LIBS="-lcrypt $EXTRA_LIBS -lcrypt"
+ fi
+ 
+-unset LIBS LDFLAGS
+ 
+ 
+ 
