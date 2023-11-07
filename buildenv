@@ -35,9 +35,9 @@ zopen_check_results()
   chk="$1/$2_check.log"
   summary="$1/$2_summary.log"
 
-  actualPasses=$(grep '1;32mPASS' ${chk} | awk ' { print $3; }')
-  actualSkips=$(grep '1;33mSKIP' ${chk} | awk ' { print $3; }')
-  actualFailures=$(grep '1;31mFAIL' ${chk} | awk ' { print $3; }')
+  actualPasses=$(grep '1;32mPASS' ${chk} | awk ' { print $3; }' | wc -l)
+  actualSkips=$(grep '1;33mSKIP' ${chk} | awk ' { print $3; }' | wc -l)
+  actualFailures=$(grep '1;31mFAIL' ${chk} | awk ' { print $3; }' | wc -l)
   expectedFailures=403 # yes - almost everything fails
 
   totalTests=$((actualPasses+actualSkips+actualFailures))
