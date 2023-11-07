@@ -33,19 +33,25 @@ zopen_check_results()
   dir="$1"
   pfx="$2"
   chk="$1/$2_check.log"
+  summary="$1/$2_summary.log"
 
-  # Echo the following information to guage build health
+  actualPasses=$(grep '1;32mPASS' ${chk} | awk ' { print $3; }')
+  actualSkips=$(grep '1;33mSKIP' ${chk} | awk ' { print $3; }')
+  actualFailures=$(grep '1;31mFAIL' ${chk} | awk ' { print $3; }')
+  expectedFailures=403 # yes - almost everything fails
 
-  totalTests=$(grep '# TOTAL: ' ${chk} | awk ' { print $3; }')
-  actualFailures=$(grep '# FAIL: ' ${chk} | awk ' { print $3; }')
-  expectedFailures=0
-
+  totalTests=$((actualPasses+actualSkips+actualFailures))
   echo "actualFailures:${actualFailures}"
   echo "expectedFailures:${expectedFailures}"
   echo "totalTests:${totalTests}"
+
+  echo "PHP Results" >${summary}
+  echo "actualFailures:${actualFailures}" >>${summary}
+  echo "expectedFailures:${expectedFailures}" >>${summary}
+  echo "totalTests:${totalTests}" >>${summary}
 }
 
-zopen_append_to_env()
+zopen_get_version()
 {
-  # echo envars outside of PATH, MANPATH, LIBPATH
+  ./sapi/cli/php --version | head -1 | awk ' { print $2; }'
 }
