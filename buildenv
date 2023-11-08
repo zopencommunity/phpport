@@ -35,10 +35,17 @@ zopen_check_results()
   chk="$1/$2_check.log"
   summary="$1/$2_summary.log"
 
-  actualPasses=$(grep '1;32mPASS' ${chk} | awk ' { print $3; }' | wc -l)
-  actualSkips=$(grep '1;33mSKIP' ${chk} | awk ' { print $3; }' | wc -l)
-  actualFailures=$(grep '1;31mFAIL' ${chk} | awk ' { print $3; }' | wc -l)
-  expectedFailures=111
+  if [ -z "${NO_COLOR}" ]; then
+    actualPasses=$(grep '1;32mPASS' ${chk} | awk ' { print $3; }' | wc -l)
+    actualSkips=$(grep '1;33mSKIP' ${chk} | awk ' { print $3; }' | wc -l)
+    actualFailures=$(grep '1;31mFAIL' ${chk} | awk ' { print $3; }' | wc -l)
+  else
+    actualPasses=$(grep 'PASS' ${chk} | awk ' { print $3; }' | wc -l)
+    actualSkips=$(grep 'SKIP' ${chk} | awk ' { print $3; }' | wc -l)
+    actualFailures=$(grep 'FAIL' ${chk} | awk ' { print $3; }' | wc -l)
+  fi
+
+  expectedFailures=112
 
   totalTests=$((actualPasses+actualSkips+actualFailures))
   echo "actualFailures:${actualFailures}"
