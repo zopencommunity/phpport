@@ -21,7 +21,7 @@ if [ "${ZOPEN_BUILD_LINE}" = "STABLE" ]; then
 # Temporary work-around waiting for fopen_ascii function in zoslib so that configure works
 # and
 # Temporary work-around for lack of MAP_ANON support in zoslib mmap emulation
-  export ZOPEN_EXTRA_CFLAGS="-DMAP_ANON=16 -DMAP_ANONYMOUS=16"
+  export ZOPEN_EXTRA_CFLAGS="-DMAP_ANON=16 -DMAP_ANONYMOUS=16 -DZEND_MM_ALIGNMENT=8 -DZEND_MM_ALIGNMENT_LOG2=3"
 else
   export ZOPEN_BOOTSTRAP="./buildconf"
   export ZOPEN_CONFIGURE="./configure"
