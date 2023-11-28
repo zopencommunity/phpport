@@ -5,3 +5,4 @@ php-8.3.0/
 log/
 log.STABLE/
 install/
+nohup.out
