@@ -17,7 +17,6 @@ if [ "${ZOPEN_BUILD_LINE}" = "STABLE" ]; then
   LIBXML_LIBS=
   export ZOPEN_EXTRA_CONFIGURE_OPTS='--disable-opcache --disable-phar --without-pear --without-pcre-jit'
   export ZOPEN_COMP='CLANG'
-  export ZOPEN_EXTRA_CFLAGS='-O0'
 
 # Temporary work-around waiting for fopen_ascii function in zoslib so that configure works
 # and
