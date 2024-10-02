@@ -1,5 +1,5 @@
 # bump: php-version /PHP_VERSION="(.*)"/ https://www.php.net/downloads.php|re:/php-([\d.]+).tar.gz/$1/|semver:*
-PHP_VERSION="8.2.13"
+PHP_VERSION="8.3.12"
 
 export ZOPEN_BUILD_LINE="STABLE"
 export ZOPEN_DEV_URL="https://github.com/php/php-src.git"
