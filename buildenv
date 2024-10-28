@@ -2,6 +2,7 @@
 PHP_VERSION="8.2.13"
 
 export ZOPEN_BUILD_LINE="STABLE"
+export ZOPEN_CATEGORIES="language"
 export ZOPEN_DEV_URL="https://github.com/php/php-src.git"
 export ZOPEN_DEV_BRANCH="php-${PHP_VERSION}"
 export ZOPEN_DEV_DEPS="git make m4 autoconf perl libtool automake bison re2c zoslib sed diffutils coreutils libiconv"
