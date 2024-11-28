@@ -1,0 +1,15 @@
+diff --git a/ext/standard/hrtime.c b/ext/standard/hrtime.c
+index b033b256..f40f54c2 100644
+--- a/ext/standard/hrtime.c
++++ b/ext/standard/hrtime.c
+@@ -88,6 +88,10 @@ static int _timer_init(void)
+ 
+ 	/* pass */
+ 
++#elif PHP_HRTIME_PLATFORM_ZOS
++
++	/* pass */
++
+ #else
+ 	/* Timer unavailable. */
+ 	return -1;

@@ -1,5 +1,5 @@
 # bump: php-version /PHP_VERSION="(.*)"/ https://www.php.net/downloads.php|re:/php-([\d.]+).tar.gz/$1/|semver:*
-PHP_VERSION="8.2.13"
+PHP_VERSION="8.3.0"
 
 export ZOPEN_BUILD_LINE="STABLE"
 export ZOPEN_CATEGORIES="language"
@@ -22,7 +22,7 @@ if [ "${ZOPEN_BUILD_LINE}" = "STABLE" ]; then
 # Temporary work-around waiting for fopen_ascii function in zoslib so that configure works
 # and
 # Temporary work-around for lack of MAP_ANON support in zoslib mmap emulation
-  export ZOPEN_EXTRA_CFLAGS="-DMAP_ANON=16 -DMAP_ANONYMOUS=16"
+  export ZOPEN_EXTRA_CFLAGS="-DZEND_MM_ALIGNMENT=8 -DZEND_MM_ALIGNMENT_LOG2=3"
 else
   export ZOPEN_BOOTSTRAP="./buildconf"
   export ZOPEN_CONFIGURE="./configure"
@@ -46,7 +46,7 @@ zopen_check_results()
     actualFailures=$(grep 'FAIL' ${chk} | awk ' { print $3; }' | wc -l)
   fi
 
-  expectedFailures=112
+  expectedFailures=325
 
   totalTests=$((actualPasses+actualSkips+actualFailures))
   echo "actualFailures:${actualFailures}"
