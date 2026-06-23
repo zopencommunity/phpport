@@ -1,3 +1,5 @@
+[![CodeQL](https://github.com/zopencommunity/phpport/actions/workflows/codeql.yml/badge.svg)](https://github.com/zopencommunity/phpport/actions/workflows/codeql.yml)
+
 [![Automatic version updates](https://github.com/ZOSOpenTools/phpport/actions/workflows/bump.yml/badge.svg)](https://github.com/ZOSOpenTools/phpport/actions/workflows/bump.yml)
 
 # Php
