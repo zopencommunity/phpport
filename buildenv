@@ -1,5 +1,5 @@
 # bump: php-version /PHP_VERSION="(.*)"/ https://github.com/php/php-src.git|semver:~8.2
-PHP_VERSION="8.2.13"
+PHP_VERSION="8.2.34"
 
 export ZOPEN_BUILD_LINE="STABLE"
 export ZOPEN_CATEGORIES="language"
