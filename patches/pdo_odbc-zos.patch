@@ -1,0 +1,261 @@
+diff --git a/configure.ac b/configure.ac
+index 18a46442..87b7517f 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -1183,7 +1183,11 @@ if test "$ac_cv_lib_crypt_crypt" = "yes"; then
+   EXTRA_LIBS="-lcrypt $EXTRA_LIBS -lcrypt"
+ fi
+ 
+-unset LIBS LDFLAGS
++dnl Keep the zopen dependency link flags, as in the release configure patch.
++case "$host_os" in
++  openedition*|os390*|zos*) ;;
++  *) unset LIBS LDFLAGS ;;
++esac
+ 
+ dnl PEAR
+ dnl ----------------------------------------------------------------------------
+diff --git a/ext/pdo_odbc/Makefile.zos.frag b/ext/pdo_odbc/Makefile.zos.frag
+new file mode 100644
+index 00000000..72a67fc9
+--- /dev/null
++++ b/ext/pdo_odbc/Makefile.zos.frag
+@@ -0,0 +1,8 @@
++# Native z/OS imports cannot be resolved with ELF-style libtool module links.
++# PHP exports its core into php.x; bind the module only after that executable.
++$(phplibdir)/pdo_odbc.so: $(shared_objects_pdo_odbc) $(SAPI_CLI_PATH) $(PDO_ODBC_SHARED_LIBADD)
++	$(CC) -shared $(CFLAGS_CLEAN) $(EXTRA_CFLAGS) $(LDFLAGS) -o $@ $(shared_objects_pdo_odbc:.lo=.o) $(top_builddir)/sapi/cli/php.x $(PDO_ODBC_SHARED_LIBADD)
++
++# PHP's test runner sources .la metadata to discover module names.
++$(phplibdir)/pdo_odbc.la: $(phplibdir)/pdo_odbc.so
++	@echo "dlname='pdo_odbc.so'" > $@
+diff --git a/ext/pdo_odbc/config.m4 b/ext/pdo_odbc/config.m4
+index 72b60419..3b0bff18 100644
+--- a/ext/pdo_odbc/config.m4
++++ b/ext/pdo_odbc/config.m4
+@@ -1,6 +1,6 @@
+ define([PDO_ODBC_HELP_TEXT],[[
+   The include and lib dirs are looked for under 'dir'. The 'flavour' can be one
+-  of: ibm-db2, iODBC, unixODBC, generic. If ',dir' part is omitted, default for
++  of: ibm-db2, ibm-db2-zos, iODBC, unixODBC, generic. If ',dir' part is omitted, default for
+   the flavour you have selected will be used. e.g.: --with-pdo-odbc=unixODBC
+   will check for unixODBC under /usr/local. You may attempt to use an otherwise
+   unsupported driver using the 'generic' flavour. The syntax for generic ODBC
+@@ -23,6 +23,9 @@ AC_DEFUN([PDO_ODBC_CHECK_HEADER],[
+   fi
+ ])
+ 
++AC_ARG_VAR([PDO_ODBC_DB2_INCLUDE], [native Db2 for z/OS ODBC header directory])
++AC_ARG_VAR([PDO_ODBC_DB2_SIDEDECK], [absolute path to the native 64-bit DSNAO64C side deck])
++
+ if test "$PHP_PDO_ODBC" != "no"; then
+ 
+   if test "$PHP_PDO" = "no" && test "$ext_shared" = "no"; then
+@@ -41,6 +44,22 @@ if test "$PHP_PDO_ODBC" != "no"; then
+   fi
+ 
+   case $pdo_odbc_flavour in
++    ibm-db2-zos)
++        if test ! -f "$PDO_ODBC_DB2_INCLUDE/sqlcli1.h"; then
++          AC_MSG_ERROR([Set PDO_ODBC_DB2_INCLUDE to the native Db2 ODBC header directory containing sqlcli1.h])
++        fi
++        case "$PDO_ODBC_DB2_SIDEDECK" in
++          /*) ;;
++          *) AC_MSG_ERROR([PDO_ODBC_DB2_SIDEDECK must be an absolute path to DSNAO64C]) ;;
++        esac
++        if test ! -r "$PDO_ODBC_DB2_SIDEDECK"; then
++          AC_MSG_ERROR([Cannot read PDO_ODBC_DB2_SIDEDECK])
++        fi
++        pdo_odbc_def_incdir="$PDO_ODBC_DB2_INCLUDE"
++        pdo_odbc_def_libdir="`dirname "$PDO_ODBC_DB2_SIDEDECK"`"
++        AC_DEFINE([PDO_ODBC_DB2_ZOS], [1], [Use native Db2 for z/OS ODBC])
++        ;;
++
+     ibm-db2)
+         pdo_odbc_def_libdir=/home/db2inst1/sqllib/lib
+         pdo_odbc_def_incdir=/home/db2inst1/sqllib/include
+@@ -117,9 +136,38 @@ if test "$PHP_PDO_ODBC" != "no"; then
+   fi
+ 
+   PDO_ODBC_INCLUDE="$pdo_odbc_def_cflags -I$PDO_ODBC_INCDIR -DPDO_ODBC_TYPE=\\\"$pdo_odbc_flavour\\\""
+-  PDO_ODBC_LDFLAGS="$pdo_odbc_def_ldflags -L$PDO_ODBC_LIBDIR -l$pdo_odbc_def_lib"
++  if test "$pdo_odbc_flavour" = "ibm-db2-zos"; then
++    pdo_odbc_save_CPPFLAGS="$CPPFLAGS"
++    pdo_odbc_save_LIBS="$LIBS"
++    CPPFLAGS="$CPPFLAGS -I$PDO_ODBC_INCDIR"
++    LIBS="$PDO_ODBC_DB2_SIDEDECK $LIBS"
++    AC_MSG_CHECKING([for native 64-bit Db2 ODBC linkage])
++    AC_LINK_IFELSE([AC_LANG_PROGRAM([[
++#include <sqlcli1.h>
++#if !defined(__MVS__) || !defined(_LP64)
++# error Native Db2 ODBC requires 64-bit z/OS
++#endif
++    ]], [[
++      SQLHENV env = SQL_NULL_HENV;
++      SQLLEN indicator = 0;
++      SQLRETURN rc = SQLAllocHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &env);
++      rc = SQLBindCol(SQL_NULL_HSTMT, 1, SQL_C_CHAR, 0, 0, &indicator);
++      return rc;
++    ]])], [AC_MSG_RESULT([yes])], [
++      AC_MSG_ERROR([Cannot link native 64-bit Db2 ODBC; check headers, DSNAO64C, and config.log])
++    ])
++    CPPFLAGS="$pdo_odbc_save_CPPFLAGS"
++    LIBS="$pdo_odbc_save_LIBS"
++    dnl PHP_EVAL_LIBLINE discards bare side-deck paths. Preserve it directly.
++    if test "$ext_shared" = "yes"; then
++      PDO_ODBC_SHARED_LIBADD="$PDO_ODBC_DB2_SIDEDECK"
++    else
++      EXTRA_LIBS="$PDO_ODBC_DB2_SIDEDECK $EXTRA_LIBS"
++    fi
++  else
++    PDO_ODBC_LDFLAGS="$pdo_odbc_def_ldflags -L$PDO_ODBC_LIBDIR -l$pdo_odbc_def_lib"
+ 
+-  PHP_EVAL_LIBLINE([$PDO_ODBC_LDFLAGS], [PDO_ODBC_SHARED_LIBADD])
++    PHP_EVAL_LIBLINE([$PDO_ODBC_LDFLAGS], [PDO_ODBC_SHARED_LIBADD])
+ 
+   dnl Check first for an ODBC 1.0 function to assert that the libraries work
+   PHP_CHECK_LIBRARY($pdo_odbc_def_lib, SQLBindCol,
+@@ -137,8 +185,31 @@ functions required for PDO support.
+   ],[
+     AC_MSG_ERROR([Your ODBC library does not exist or there was an error. Check config.log for more information])
+   ], $PDO_ODBC_LDFLAGS)
++  fi
+ 
+-  PHP_NEW_EXTENSION(pdo_odbc, pdo_odbc.c odbc_driver.c odbc_stmt.c, $ext_shared,,-I$pdo_cv_inc_path $PDO_ODBC_INCLUDE)
++  if test "$pdo_odbc_flavour" = "ibm-db2-zos" && test "$ext_shared" = "yes"; then
++    dnl A z/OS module must import the core from the matching PHP executable.
++    dnl Do not accidentally load a second core into CGI/phpdbg processes.
++    if test "$PHP_CLI" = "no" || test "$PHP_CGI" != "no" || test "$PHP_PHPDBG" != "no"; then
++      AC_MSG_ERROR([Shared native PDO_ODBC currently requires CLI with --disable-cgi --disable-phpdbg; use static PDO_ODBC for other SAPIs])
++    fi
++    if test "$PHP_PDO_SHARED" = "yes"; then
++      AC_MSG_ERROR([Shared native PDO_ODBC requires PDO built into PHP])
++    fi
++    PHP_PDO_ODBC_SHARED=yes
++    PHP_ADD_SOURCES_X([ext/pdo_odbc], [pdo_odbc.c odbc_driver.c odbc_stmt.c],
++      [-I$pdo_cv_inc_path $PDO_ODBC_INCLUDE -DZEND_COMPILE_DL_EXT=1], [shared_objects_pdo_odbc])
++    AC_DEFINE([COMPILE_DL_PDO_ODBC], [1], [Build PDO_ODBC as a dynamic module])
++    PHP_SUBST([shared_objects_pdo_odbc])
++    PHP_ADD_BUILD_DIR([ext/pdo_odbc])
++    PHP_MODULES="$PHP_MODULES \$(phplibdir)/pdo_odbc.la"
++    install_modules="install-modules"
++    dnl The bundled libtool has no native z/OS DLL/import-deck support.
++    BUILD_CLI='$(CC) $(CFLAGS_CLEAN) $(EXTRA_CFLAGS) $(EXTRA_LDFLAGS_PROGRAM) $(LDFLAGS) $(NATIVE_RPATHS) $(PHP_GLOBAL_OBJS:.lo=.o) $(PHP_BINARY_OBJS:.lo=.o) $(PHP_CLI_OBJS:.lo=.o) $(EXTRA_LIBS) $(ZEND_EXTRA_LIBS) -o $(SAPI_CLI_PATH) -Wl,-x,$(top_builddir)/sapi/cli/php.x'
++    PHP_ADD_MAKEFILE_FRAGMENT([$abs_srcdir/ext/pdo_odbc/Makefile.zos.frag])
++  else
++    PHP_NEW_EXTENSION(pdo_odbc, pdo_odbc.c odbc_driver.c odbc_stmt.c, $ext_shared,,-I$pdo_cv_inc_path $PDO_ODBC_INCLUDE)
++  fi
+   PHP_SUBST(PDO_ODBC_SHARED_LIBADD)
+   PHP_ADD_EXTENSION_DEP(pdo_odbc, pdo)
+ fi
+diff --git a/ext/pdo_odbc/odbc_driver.c b/ext/pdo_odbc/odbc_driver.c
+index a9d5befd..96572ad4 100644
+--- a/ext/pdo_odbc/odbc_driver.c
++++ b/ext/pdo_odbc/odbc_driver.c
+@@ -128,10 +128,10 @@ static void odbc_handle_closer(pdo_dbh_t *dbh)
+ 		SQLEndTran(SQL_HANDLE_DBC, H->dbc, SQL_ROLLBACK);
+ 		SQLDisconnect(H->dbc);
+ 		SQLFreeHandle(SQL_HANDLE_DBC, H->dbc);
+-		H->dbc = NULL;
++		H->dbc = SQL_NULL_HDBC;
+ 	}
+ 	SQLFreeHandle(SQL_HANDLE_ENV, H->env);
+-	H->env = NULL;
++	H->env = SQL_NULL_HENV;
+ 	pefree(H, dbh->is_persistent);
+ 	dbh->driver_data = NULL;
+ }
+diff --git a/ext/pdo_odbc/odbc_stmt.c b/ext/pdo_odbc/odbc_stmt.c
+index ea0dd0e5..9f9eb954 100644
+--- a/ext/pdo_odbc/odbc_stmt.c
++++ b/ext/pdo_odbc/odbc_stmt.c
+@@ -525,6 +525,7 @@ static int odbc_stmt_fetch(pdo_stmt_t *stmt,
+ {
+ 	RETCODE rc;
+ 	SQLSMALLINT odbcori;
++	char *fetch_api = "SQLFetchScroll";
+ 	pdo_odbc_stmt *S = (pdo_odbc_stmt*)stmt->driver_data;
+ 
+ 	switch (ori) {
+@@ -538,13 +539,27 @@ static int odbc_stmt_fetch(pdo_stmt_t *stmt,
+ 			strcpy(stmt->error_code, "HY106");
+ 			return 0;
+ 	}
++#ifdef PDO_ODBC_DB2_ZOS
++	/* Native Db2 cannot reliably SQLGetData LOBs after SQLFetchScroll. */
++	if (ori == PDO_FETCH_ORI_NEXT) {
++		fetch_api = "SQLFetch";
++		rc = SQLFetch(S->stmt);
++	} else {
++		if (offset > INT32_MAX || offset < INT32_MIN) {
++			strcpy(stmt->error_code, "HY106");
++			return 0;
++		}
++		rc = SQLFetchScroll(S->stmt, odbcori, (SQLLEN)offset);
++	}
++#else
+ 	rc = SQLFetchScroll(S->stmt, odbcori, offset);
++#endif
+ 
+ 	if (rc == SQL_SUCCESS) {
+ 		return 1;
+ 	}
+ 	if (rc == SQL_SUCCESS_WITH_INFO) {
+-		pdo_odbc_stmt_error("SQLFetchScroll");
++		pdo_odbc_stmt_error(fetch_api);
+ 		return 1;
+ 	}
+ 
+@@ -553,7 +568,7 @@ static int odbc_stmt_fetch(pdo_stmt_t *stmt,
+ 		return 0;
+ 	}
+ 
+-	pdo_odbc_stmt_error("SQLFetchScroll");
++	pdo_odbc_stmt_error(fetch_api);
+ 
+ 	return 0;
+ }
+diff --git a/ext/pdo_odbc/php_pdo_odbc_int.h b/ext/pdo_odbc/php_pdo_odbc_int.h
+index 6f1b99b0..59bebe8c 100644
+--- a/ext/pdo_odbc/php_pdo_odbc_int.h
++++ b/ext/pdo_odbc/php_pdo_odbc_int.h
+@@ -97,8 +97,18 @@
+ 
+ /* }}} */
+ 
++/* Native Db2 defines pooling constants, but does not implement the ODBC
++ * driver-manager pooling attributes. Do not enable code based on macros alone. */
++#ifdef PDO_ODBC_DB2_ZOS
++# undef SQL_ATTR_CONNECTION_POOLING
++#endif
++
+ /* {{{ Figure out the type for handles */
+-#if !defined(HENV) && !defined(SQLHENV) && defined(SQLHANDLE)
++#if defined(PDO_ODBC_DB2_ZOS)
++# define PDO_ODBC_HENV        SQLHENV
++# define PDO_ODBC_HDBC        SQLHDBC
++# define PDO_ODBC_HSTMT       SQLHSTMT
++#elif !defined(HENV) && !defined(SQLHENV) && defined(SQLHANDLE)
+ # define PDO_ODBC_HENV		SQLHANDLE
+ # define PDO_ODBC_HDBC		SQLHANDLE
+ # define PDO_ODBC_HSTMT		SQLHANDLE
+diff --git a/ext/pdo_odbc/tests/driver_registration.phpt b/ext/pdo_odbc/tests/driver_registration.phpt
+new file mode 100644
+index 00000000..1fbf4399
+--- /dev/null
++++ b/ext/pdo_odbc/tests/driver_registration.phpt
+@@ -0,0 +1,14 @@
++--TEST--
++PDO_ODBC registers the odbc driver without opening a database connection
++--SKIPIF--
++<?php
++if (!extension_loaded('pdo_odbc')) die('skip PDO_ODBC is not loaded');
++?>
++--FILE--
++<?php
++var_dump(extension_loaded('pdo_odbc'));
++var_dump(in_array('odbc', PDO::getAvailableDrivers(), true));
++?>
++--EXPECT--
++bool(true)
++bool(true)

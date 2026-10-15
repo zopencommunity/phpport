@@ -1,0 +1,67 @@
+diff --git a/ext/date/lib/timelib.h b/ext/date/lib/timelib.h
+index a532bf60..0828718a 100644
+--- a/ext/date/lib/timelib.h
++++ b/ext/date/lib/timelib.h
+@@ -455,7 +455,7 @@ typedef struct _timelib_format_config {
+ } timelib_format_config;
+ 
+ /* Function pointers */
+-typedef timelib_tzinfo* (*timelib_tz_get_wrapper)(const char *tzname, const timelib_tzdb *tzdb, int *error_code);
++typedef timelib_tzinfo* (*timelib_tz_get_wrapper)(const char *timezone_id, const timelib_tzdb *tzdb, int *error_code);
+ 
+ /* From dow.c */
+ /* Calculates the day of the week from y, m, and d. 0=Sunday..6=Saturday */
+diff --git a/ext/libxml/libxml.c b/ext/libxml/libxml.c
+index 22eb1901..5f9749ff 100644
+--- a/ext/libxml/libxml.c
++++ b/ext/libxml/libxml.c
+@@ -419,8 +419,10 @@ php_libxml_input_buffer_create_filename(const char *URI, xmlCharEncoding enc)
+ static xmlOutputBufferPtr
+ php_libxml_output_buffer_create_filename(const char *URI,
+                               xmlCharEncodingHandlerPtr encoder,
+-                              int compression ATTRIBUTE_UNUSED)
++                              int compression)
+ {
++	ZEND_IGNORE_VALUE(compression);
++
+ 	xmlOutputBufferPtr ret;
+ 	xmlURIPtr puri;
+ 	void *context = NULL;
+@@ -472,7 +474,11 @@ static void _php_libxml_free_error(void *ptr)
+ 	xmlResetError((xmlErrorPtr) ptr);
+ }
+ 
+-static void _php_list_set_error_structure(xmlErrorPtr error, const char *msg)
++#if LIBXML_VERSION >= 21200
++static void _php_list_set_error_structure(const xmlError *error, const char *msg)
++#else
++static void _php_list_set_error_structure(xmlError *error, const char *msg)
++#endif
+ {
+ 	xmlError error_copy;
+ 	int ret;
+@@ -725,7 +731,11 @@ PHP_LIBXML_API void php_libxml_ctx_warning(void *ctx, const char *msg, ...)
+ 	va_end(args);
+ }
+ 
++#if LIBXML_VERSION >= 21200
++PHP_LIBXML_API void php_libxml_structured_error_handler(void *userData, const xmlError *error)
++#else
+ PHP_LIBXML_API void php_libxml_structured_error_handler(void *userData, xmlErrorPtr error)
++#endif
+ {
+ 	_php_list_set_error_structure(error, NULL);
+ 
+@@ -957,11 +967,9 @@ PHP_FUNCTION(libxml_use_internal_errors)
+ /* {{{ Retrieve last error from libxml */
+ PHP_FUNCTION(libxml_get_last_error)
+ {
+-	xmlErrorPtr error;
+-
+ 	ZEND_PARSE_PARAMETERS_NONE();
+ 
+-	error = xmlGetLastError();
++	const xmlError *error = xmlGetLastError();
+ 
+ 	if (error) {
+ 		object_init_ex(return_value, libxmlerror_class_entry);

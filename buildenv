@@ -1,4 +1,4 @@
-# bump: php-version /PHP_VERSION="(.*)"/ https://www.php.net/downloads.php|re:/php-([\d.]+).tar.gz/$1/|semver:*
+# bump: php-version /PHP_VERSION="(.*)"/ https://github.com/php/php-src.git|semver:~8.2
 PHP_VERSION="8.2.13"
 
 export ZOPEN_BUILD_LINE="STABLE"
@@ -27,7 +27,54 @@ else
   export ZOPEN_BOOTSTRAP="./buildconf"
   export ZOPEN_CONFIGURE="./configure"
 fi
+# Native Db2 is a site-supplied SDK, not a zopen package. Leave it disabled
+# unless explicitly requested; never bundle IBM headers or the side deck.
+# PDO_ODBC_DB2_INCLUDE and PDO_ODBC_DB2_SIDEDECK are consumed by configure.
+case "${ZOPEN_PDO_ODBC:-no}" in
+  no) ;;
+  shared|static)
+    export PDO_ODBC_DB2_INCLUDE PDO_ODBC_DB2_SIDEDECK
+    export ZOPEN_STABLE_DEPS="${ZOPEN_STABLE_DEPS} m4 perl autoconf"
+    export ZOPEN_BOOTSTRAP="./buildconf"
+    export ZOPEN_BOOTSTRAP_OPTS="--force"
+    export ZOPEN_EXTRA_CFLAGS="${ZOPEN_EXTRA_CFLAGS} -fvisibility=default"
+    if [ "${ZOPEN_PDO_ODBC}" = "shared" ]; then
+      export ZOPEN_EXTRA_CONFIGURE_OPTS="${ZOPEN_EXTRA_CONFIGURE_OPTS} --disable-cgi --disable-phpdbg --with-pdo-odbc=shared,ibm-db2-zos"
+    else
+      export ZOPEN_EXTRA_CONFIGURE_OPTS="${ZOPEN_EXTRA_CONFIGURE_OPTS} --with-pdo-odbc=ibm-db2-zos"
+    fi
+    ;;
+  *)
+    echo "ZOPEN_PDO_ODBC must be no, shared, or static" >&2
+    return 1
+    ;;
+esac
 export ZOPEN_CHECK_OPTS="test"
+
+zopen_pre_check()
+{
+  if [ "${ZOPEN_PDO_ODBC:-no}" = "shared" ]; then
+    # The module imports the running PHP executable by its DLL name (php).
+    export LIBPATH="${PWD}/sapi/cli${LIBPATH:+:${LIBPATH}}"
+  fi
+}
+
+zopen_append_to_env()
+{
+  if [ "${ZOPEN_PDO_ODBC:-no}" = "shared" ]; then
+    echo 'export LIBPATH="$PWD/bin${LIBPATH:+:${LIBPATH}}"'
+  fi
+}
+
+zopen_install_caveats()
+{
+  if [ "${ZOPEN_PDO_ODBC:-no}" = "shared" ]; then
+    echo 'PDO_ODBC is available but is not enabled automatically.'
+    echo 'Load pdo_odbc.so only with this matching PHP CLI build (not CGI/phpdbg).'
+    echo 'Configure the site Db2 STEPLIB and EBCDIC/T=off DSNAOINI first.'
+    echo 'See https://github.com/zopencommunity/phpport/blob/main/docs/pdo-odbc.md'
+  fi
+}
 
 zopen_check_results()
 {
@@ -36,19 +83,24 @@ zopen_check_results()
   chk="$1/$2_check.log"
   summary="$1/$2_summary.log"
 
-  if [ -z "${NO_COLOR}" ]; then
-    actualPasses=$(grep '1;32mPASS' ${chk} | awk ' { print $3; }' | wc -l)
-    actualSkips=$(grep '1;33mSKIP' ${chk} | awk ' { print $3; }' | wc -l)
-    actualFailures=$(grep '1;31mFAIL' ${chk} | awk ' { print $3; }' | wc -l)
-  else
-    actualPasses=$(grep 'PASS' ${chk} | awk ' { print $3; }' | wc -l)
-    actualSkips=$(grep 'SKIP' ${chk} | awk ' { print $3; }' | wc -l)
-    actualFailures=$(grep 'FAIL' ${chk} | awk ' { print $3; }' | wc -l)
-  fi
+  # Use the final PHP summary, not color escapes or per-test output. Skips
+  # must not be advertised as passes in zopen's package metadata.
+  actualPasses=$(awk '/^Tests passed/{n=$4} END {print n+0}' "${chk}")
+  actualSkips=$(awk '/^Tests skipped/{n=$4} END {print n+0}' "${chk}")
+  actualFailures=$(awk '
+    /^Tests failed/{failed=$4}
+    /^Tests borked/{borked=$4}
+    /^Tests warned/{warned=$4}
+    END {print failed+borked+warned+0}' "${chk}")
 
   expectedFailures=112
+  case "${TESTS:-}" in
+    ext/pdo_odbc*) expectedFailures=0 ;;
+  esac
 
-  totalTests=$((actualPasses+actualSkips+actualFailures))
+  totalTests=$((actualPasses+actualFailures))
+  echo "actualPasses:${actualPasses}"
+  echo "actualSkips:${actualSkips}"
   echo "actualFailures:${actualFailures}"
   echo "expectedFailures:${expectedFailures}"
   echo "totalTests:${totalTests}"

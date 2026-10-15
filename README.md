@@ -27,6 +27,7 @@ See the [zopen porting guide](https://zopen.community/#/Guides/Porting) for more
 
 # Documentation
 
+- [Native Db2 PDO_ODBC on z/OS (experimental, opt-in)](docs/pdo-odbc.md)
 
 # Troubleshooting
 TBD
