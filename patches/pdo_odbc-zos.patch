@@ -30,7 +30,7 @@ index 00000000..72a67fc9
 +$(phplibdir)/pdo_odbc.la: $(phplibdir)/pdo_odbc.so
 +	@echo "dlname='pdo_odbc.so'" > $@
 diff --git a/ext/pdo_odbc/config.m4 b/ext/pdo_odbc/config.m4
-index 72b60419..3b0bff18 100644
+index 72b60419..a8b288df 100644
 --- a/ext/pdo_odbc/config.m4
 +++ b/ext/pdo_odbc/config.m4
 @@ -1,6 +1,6 @@
@@ -115,7 +115,7 @@ index 72b60419..3b0bff18 100644
  
    dnl Check first for an ODBC 1.0 function to assert that the libraries work
    PHP_CHECK_LIBRARY($pdo_odbc_def_lib, SQLBindCol,
-@@ -137,8 +185,31 @@ functions required for PDO support.
+@@ -137,8 +185,39 @@ functions required for PDO support.
    ],[
      AC_MSG_ERROR([Your ODBC library does not exist or there was an error. Check config.log for more information])
    ], $PDO_ODBC_LDFLAGS)
@@ -126,8 +126,16 @@ index 72b60419..3b0bff18 100644
 +    dnl A z/OS module must import the core from the matching PHP executable.
 +    dnl Do not accidentally load a second core into CGI/phpdbg processes.
 +    if test "$PHP_CLI" = "no" || test "$PHP_CGI" != "no" || test "$PHP_PHPDBG" != "no"; then
-+      AC_MSG_ERROR([Shared native PDO_ODBC currently requires CLI with --disable-cgi --disable-phpdbg; use static PDO_ODBC for other SAPIs])
++      AC_MSG_ERROR([Shared native PDO_ODBC requires CLI only; use static PDO_ODBC for other SAPIs])
 +    fi
++    case "$PHP_FPM" in
++      ""|no) ;;
++      *) AC_MSG_ERROR([Shared native PDO_ODBC cannot be used with FPM; use static PDO_ODBC]) ;;
++    esac
++    case "$PHP_SAPI" in
++      ""|none) ;;
++      *) AC_MSG_ERROR([Shared native PDO_ODBC cannot be used with embed/Apache/other module SAPIs; use static PDO_ODBC]) ;;
++    esac
 +    if test "$PHP_PDO_SHARED" = "yes"; then
 +      AC_MSG_ERROR([Shared native PDO_ODBC requires PDO built into PHP])
 +    fi
@@ -149,27 +157,706 @@ index 72b60419..3b0bff18 100644
    PHP_ADD_EXTENSION_DEP(pdo_odbc, pdo)
  fi
 diff --git a/ext/pdo_odbc/odbc_driver.c b/ext/pdo_odbc/odbc_driver.c
-index fa160bfb..b7c8513b 100644
+index fa160bfb..82a3465c 100644
 --- a/ext/pdo_odbc/odbc_driver.c
 +++ b/ext/pdo_odbc/odbc_driver.c
-@@ -128,10 +128,10 @@ static void odbc_handle_closer(pdo_dbh_t *dbh)
+@@ -28,6 +28,61 @@
+ #include "php_pdo_odbc.h"
+ #include "php_pdo_odbc_int.h"
+ #include "zend_exceptions.h"
++#ifdef PDO_ODBC_DB2_ZOS
++#include "odbc_zos_driver.h"
++#define PDO_ODBC_STATE_SUCCEEDED(rc) ((rc) == SQL_SUCCESS || (rc) == SQL_SUCCESS_WITH_INFO)
++
++/* Complete only missing top-level credentials, including explicitly supplied
++ * empty strings. Keep the shared ODBC quoting rules for the appended values. */
++static bool pdo_odbc_zos_complete_connstr(pdo_dbh_t *dbh)
++{
++	unsigned present = pdo_odbc_zos_credentials(dbh->data_source);
++	bool add_uid = dbh->username != NULL && !(present & PDO_ODBC_ZOS_UID);
++	bool add_pwd = dbh->password != NULL && !(present & PDO_ODBC_ZOS_PWD);
++	const char *values[2] = {add_uid ? dbh->username : NULL, add_pwd ? dbh->password : NULL};
++	char *quoted[2] = {NULL, NULL};
++	size_t length = strlen(dbh->data_source);
++	bool valid = pdo_odbc_zos_connstr_length_valid(length);
++
++	for (unsigned i = 0; valid && i < 2; i++) {
++		if (values[i] == NULL) {
++			continue;
++		}
++		/* Bound the raw value before asking the quoting helper to size it. */
++		if (!pdo_odbc_zos_connstr_length_valid(strlen(values[i]))) {
++			valid = false;
++			break;
++		}
++		if (!php_odbc_connstr_is_quoted(values[i]) && php_odbc_connstr_should_quote(values[i])) {
++			size_t size = php_odbc_connstr_estimate_quote_length(values[i]);
++			quoted[i] = emalloc(size);
++			php_odbc_connstr_quote(quoted[i], values[i], size);
++			values[i] = quoted[i];
++		}
++		valid = pdo_odbc_zos_append_length(&length, strlen(values[i]));
++	}
++	if (valid && (add_uid || add_pwd)) {
++		char *dsn = pemalloc(length + 1, dbh->is_persistent);
++		snprintf(dsn, length + 1, "%s%s%s%s%s", dbh->data_source,
++			add_uid ? ";UID=" : "", add_uid ? values[0] : "",
++			add_pwd ? ";PWD=" : "", add_pwd ? values[1] : "");
++		pefree((char *)dbh->data_source, dbh->is_persistent);
++		dbh->data_source = dsn;
++		dbh->data_source_len = length;
++	}
++	for (unsigned i = 0; i < 2; i++) {
++		if (quoted[i]) {
++			efree(quoted[i]);
++		}
++	}
++	if (!valid) {
++		pdo_raise_impl_error(dbh, NULL, "HY090", "Native ODBC connection string exceeds INT16_MAX bytes");
++	}
++	return valid;
++}
++#else
++#define PDO_ODBC_STATE_SUCCEEDED(rc) ((rc) == SQL_SUCCESS)
++#endif
+ 
+ static void pdo_odbc_fetch_error_func(pdo_dbh_t *dbh, pdo_stmt_t *stmt, zval *info)
+ {
+@@ -92,6 +147,9 @@ void pdo_odbc_error(pdo_dbh_t *dbh, pdo_stmt_t *stmt, PDO_ODBC_HSTMT statement,
+ 		errmsgsize = 0;
+ 	}
+ 
++#ifdef PDO_ODBC_DB2_ZOS
++	errmsgsize = (SQLSMALLINT)pdo_odbc_zos_output_length(errmsgsize, sizeof(einfo->last_err_msg));
++#endif
+ 	einfo->last_err_msg[errmsgsize] = '\0';
+ 	einfo->file = file;
+ 	einfo->line = line;
+@@ -124,14 +182,25 @@ static void odbc_handle_closer(pdo_dbh_t *dbh)
+ {
+ 	pdo_odbc_db_handle *H = (pdo_odbc_db_handle*)dbh->driver_data;
+ 
++#ifdef PDO_ODBC_DB2_ZOS
++	if (H == NULL) {
++		return;
++	}
++#endif
+ 	if (H->dbc != SQL_NULL_HANDLE) {
  		SQLEndTran(SQL_HANDLE_DBC, H->dbc, SQL_ROLLBACK);
  		SQLDisconnect(H->dbc);
  		SQLFreeHandle(SQL_HANDLE_DBC, H->dbc);
 -		H->dbc = NULL;
 +		H->dbc = SQL_NULL_HDBC;
  	}
++#ifdef PDO_ODBC_DB2_ZOS
++	if (H->env != SQL_NULL_HENV) {
++		SQLFreeHandle(SQL_HANDLE_ENV, H->env);
++	}
++#else
  	SQLFreeHandle(SQL_HANDLE_ENV, H->env);
 -	H->env = NULL;
++#endif
 +	H->env = SQL_NULL_HENV;
  	pefree(H, dbh->is_persistent);
  	dbh->driver_data = NULL;
  }
+@@ -148,6 +217,13 @@ static bool odbc_handle_preparer(pdo_dbh_t *dbh, zend_string *sql, pdo_stmt_t *s
+ 	S->H = H;
+ 	S->assume_utf8 = H->assume_utf8;
+ 
++#ifdef PDO_ODBC_DB2_ZOS
++	if (!pdo_odbc_zos_prepare_text_valid(ZSTR_VAL(sql), ZSTR_LEN(sql))) {
++		efree(S);
++		pdo_raise_impl_error(dbh, stmt, "HY090", "Native ODBC SQLPrepare requires NUL-free SQL of at most INT32_MAX bytes");
++		return false;
++	}
++#endif
+ 	/* before we prepare, we need to peek at the query; if it uses named parameters,
+ 	 * we want PDO to rewrite them for us */
+ 	stmt->supports_placeholders = PDO_PLACEHOLDER_POSITIONAL;
+@@ -163,6 +239,18 @@ static bool odbc_handle_preparer(pdo_dbh_t *dbh, zend_string *sql, pdo_stmt_t *s
+ 		return false;
+ 	}
+ 
++#ifdef PDO_ODBC_DB2_ZOS
++	/* Keep the existing SQL_NTS interface; do not silently truncate on NUL
++	 * or exceed the SQLINTEGER bound, including rewritten SQL. */
++	if (!pdo_odbc_zos_prepare_text_valid(ZSTR_VAL(sql), ZSTR_LEN(sql))) {
++		if (nsql) {
++			zend_string_release(nsql);
++		}
++		efree(S);
++		pdo_raise_impl_error(dbh, stmt, "HY090", "Native ODBC SQLPrepare requires NUL-free SQL of at most INT32_MAX bytes");
++		return false;
++	}
++#endif
+ 	rc = SQLAllocHandle(SQL_HANDLE_STMT, H->dbc, &S->stmt);
+ 
+ 	if (rc == SQL_INVALID_HANDLE || rc == SQL_ERROR) {
+@@ -182,6 +270,10 @@ static bool odbc_handle_preparer(pdo_dbh_t *dbh, zend_string *sql, pdo_stmt_t *s
+ 		if (rc != SQL_SUCCESS && rc != SQL_SUCCESS_WITH_INFO) {
+ 			pdo_odbc_stmt_error("SQLSetStmtAttr: SQL_ATTR_CURSOR_SCROLLABLE");
+ 			SQLFreeHandle(SQL_HANDLE_STMT, S->stmt);
++#ifdef PDO_ODBC_DB2_ZOS
++			efree(S);
++			stmt->driver_data = NULL;
++#endif
+ 			if (nsql) {
+ 				zend_string_release(nsql);
+ 			}
+@@ -196,7 +288,7 @@ static bool odbc_handle_preparer(pdo_dbh_t *dbh, zend_string *sql, pdo_stmt_t *s
+ 
+ 	stmt->methods = &odbc_stmt_methods;
+ 
+-	if (rc != SQL_SUCCESS) {
++	if (!PDO_ODBC_STATE_SUCCEEDED(rc)) {
+ 		pdo_odbc_stmt_error("SQLPrepare");
+ 		if (rc != SQL_SUCCESS_WITH_INFO) {
+ 			/* clone error information into the db handle */
+@@ -221,13 +313,23 @@ static zend_long odbc_handle_doer(pdo_dbh_t *dbh, const zend_string *sql)
+ 	SQLLEN row_count = -1;
+ 	PDO_ODBC_HSTMT	stmt;
+ 
++#ifdef PDO_ODBC_DB2_ZOS
++	if (!pdo_odbc_zos_sql_length_valid(ZSTR_LEN(sql))) {
++		pdo_raise_impl_error(dbh, NULL, "HY090", "Native ODBC SQLExecDirect input exceeds INT32_MAX bytes");
++		return -1;
++	}
++#endif
+ 	rc = SQLAllocHandle(SQL_HANDLE_STMT, H->dbc, &stmt);
+ 	if (rc != SQL_SUCCESS && rc != SQL_SUCCESS_WITH_INFO) {
+ 		pdo_odbc_drv_error("SQLAllocHandle: STMT");
+ 		return -1;
+ 	}
+ 
++#ifdef PDO_ODBC_DB2_ZOS
++	rc = SQLExecDirect(stmt, (SQLCHAR *) ZSTR_VAL(sql), (SQLINTEGER) ZSTR_LEN(sql));
++#else
+ 	rc = SQLExecDirect(stmt, (SQLCHAR *) ZSTR_VAL(sql), ZSTR_LEN(sql));
++#endif
+ 
+ 	if (rc == SQL_NO_DATA) {
+ 		/* If SQLExecDirect executes a searched update or delete statement that
+@@ -272,7 +374,7 @@ static bool odbc_handle_begin(pdo_dbh_t *dbh)
+ 		pdo_odbc_db_handle *H = (pdo_odbc_db_handle *)dbh->driver_data;
+ 
+ 		rc = SQLSetConnectAttr(H->dbc, SQL_ATTR_AUTOCOMMIT, (SQLPOINTER)SQL_AUTOCOMMIT_OFF, SQL_IS_INTEGER);
+-		if (rc != SQL_SUCCESS) {
++		if (!PDO_ODBC_STATE_SUCCEEDED(rc)) {
+ 			pdo_odbc_drv_error("SQLSetConnectAttr AUTOCOMMIT = OFF");
+ 			return false;
+ 		}
+@@ -287,7 +389,7 @@ static bool odbc_handle_commit(pdo_dbh_t *dbh)
+ 
+ 	rc = SQLEndTran(SQL_HANDLE_DBC, H->dbc, SQL_COMMIT);
+ 
+-	if (rc != SQL_SUCCESS) {
++	if (!PDO_ODBC_STATE_SUCCEEDED(rc)) {
+ 		pdo_odbc_drv_error("SQLEndTran: Commit");
+ 
+ 		if (rc != SQL_SUCCESS_WITH_INFO) {
+@@ -298,7 +400,7 @@ static bool odbc_handle_commit(pdo_dbh_t *dbh)
+ 	if (dbh->auto_commit) {
+ 		/* turn auto-commit back on again */
+ 		rc = SQLSetConnectAttr(H->dbc, SQL_ATTR_AUTOCOMMIT, (SQLPOINTER)SQL_AUTOCOMMIT_ON, SQL_IS_INTEGER);
+-		if (rc != SQL_SUCCESS) {
++		if (!PDO_ODBC_STATE_SUCCEEDED(rc)) {
+ 			pdo_odbc_drv_error("SQLSetConnectAttr AUTOCOMMIT = ON");
+ 			return false;
+ 		}
+@@ -313,7 +415,7 @@ static bool odbc_handle_rollback(pdo_dbh_t *dbh)
+ 
+ 	rc = SQLEndTran(SQL_HANDLE_DBC, H->dbc, SQL_ROLLBACK);
+ 
+-	if (rc != SQL_SUCCESS) {
++	if (!PDO_ODBC_STATE_SUCCEEDED(rc)) {
+ 		pdo_odbc_drv_error("SQLEndTran: Rollback");
+ 
+ 		if (rc != SQL_SUCCESS_WITH_INFO) {
+@@ -323,7 +425,7 @@ static bool odbc_handle_rollback(pdo_dbh_t *dbh)
+ 	if (dbh->auto_commit && H->dbc) {
+ 		/* turn auto-commit back on again */
+ 		rc = SQLSetConnectAttr(H->dbc, SQL_ATTR_AUTOCOMMIT, (SQLPOINTER)SQL_AUTOCOMMIT_ON, SQL_IS_INTEGER);
+-		if (rc != SQL_SUCCESS) {
++		if (!PDO_ODBC_STATE_SUCCEEDED(rc)) {
+ 			pdo_odbc_drv_error("SQLSetConnectAttr AUTOCOMMIT = ON");
+ 			return false;
+ 		}
+@@ -342,6 +444,14 @@ static bool odbc_handle_set_attr(pdo_dbh_t *dbh, zend_long attr, zval *val)
+ 			if (!pdo_get_bool_param(&bval, val)) {
+ 				return false;
+ 			}
++#ifdef PDO_ODBC_DB2_ZOS
++			/* This flag selects UTF8/UCS2 wide conversion implemented only on
++			 * Windows, not a UTF8 narrow-character application CCSID. */
++			if (bval) {
++				pdo_raise_impl_error(dbh, NULL, "IM001", "ODBC_ATTR_ASSUME_UTF8 wide-character conversion is not supported by native Db2 PDO_ODBC");
++				return false;
++			}
++#endif
+ 			H->assume_utf8 = bval;
+ 			return true;
+ 		case PDO_ATTR_AUTOCOMMIT:
+@@ -353,19 +463,24 @@ static bool odbc_handle_set_attr(pdo_dbh_t *dbh, zend_long attr, zval *val)
+ 				return false;
+ 			}
+ 			if (dbh->auto_commit ^ bval) {
++#ifndef PDO_ODBC_DB2_ZOS
+ 				dbh->auto_commit = bval;
++#endif
+ 				RETCODE rc = SQLSetConnectAttr(
+ 					H->dbc,
+ 					SQL_ATTR_AUTOCOMMIT,
+-					dbh->auto_commit ? (SQLPOINTER) SQL_AUTOCOMMIT_ON : (SQLPOINTER) SQL_AUTOCOMMIT_OFF,
++					bval ? (SQLPOINTER) SQL_AUTOCOMMIT_ON : (SQLPOINTER) SQL_AUTOCOMMIT_OFF,
+ 					SQL_IS_INTEGER
+ 				);
+-				if (rc != SQL_SUCCESS) {
++				if (!PDO_ODBC_STATE_SUCCEEDED(rc)) {
+ 					pdo_odbc_drv_error(
+-						dbh->auto_commit ? "SQLSetConnectAttr AUTOCOMMIT = ON" : "SQLSetConnectAttr AUTOCOMMIT = OFF"
++						bval ? "SQLSetConnectAttr AUTOCOMMIT = ON" : "SQLSetConnectAttr AUTOCOMMIT = OFF"
+ 					);
+ 					return false;
+ 				}
++#ifdef PDO_ODBC_DB2_ZOS
++				dbh->auto_commit = bval;
++#endif
+ 			}
+ 			return true;
+ 		default:
+@@ -379,7 +494,7 @@ static bool odbc_handle_set_attr(pdo_dbh_t *dbh, zend_long attr, zval *val)
+ static int pdo_odbc_get_info_string(pdo_dbh_t *dbh, SQLUSMALLINT type, zval *val)
+ {
+ 	RETCODE rc;
+-	SQLSMALLINT out_len;
++	SQLSMALLINT out_len = 0;
+ 	char buf[256];
+ 	pdo_odbc_db_handle *H = (pdo_odbc_db_handle *)dbh->driver_data;
+ 	rc = SQLGetInfo(H->dbc, type, (SQLPOINTER)buf, sizeof(buf), &out_len);
+@@ -387,7 +502,15 @@ static int pdo_odbc_get_info_string(pdo_dbh_t *dbh, SQLUSMALLINT type, zval *val
+ 	if (rc != SQL_SUCCESS && rc != SQL_SUCCESS_WITH_INFO) {
+ 		return -1;
+ 	}
++#ifdef PDO_ODBC_DB2_ZOS
++	if (out_len < 0) {
++		pdo_raise_impl_error(dbh, NULL, "HY000", "Native ODBC SQLGetInfo returned an invalid length");
++		return -1;
++	}
++	ZVAL_STRINGL(val, buf, pdo_odbc_zos_output_length(out_len, sizeof(buf)));
++#else
+ 	ZVAL_STRINGL(val, buf, out_len);
++#endif
+ 	return 1;
+ }
+ 
+@@ -471,6 +594,58 @@ static int pdo_odbc_handle_factory(pdo_dbh_t *dbh, zval *driver_options) /* {{{
+ 	int use_direct = 0;
+ 	zend_ulong cursor_lib;
+ 
++#ifdef PDO_ODBC_DB2_ZOS
++	/* No native persistent handle may reach CLI: request-end transaction
++	 * rollback/reset is not implemented. Do not consult DSN/runtime first. */
++	if (dbh->is_persistent) {
++		/* Constructor failures must throw even with ERRMODE_SILENT/WARNING,
++		 * retaining IM001 rather than PDO's generic "Constructor failed". */
++		enum pdo_error_mode saved_mode = dbh->error_mode;
++		dbh->error_mode = PDO_ERRMODE_EXCEPTION;
++		pdo_raise_impl_error(dbh, NULL, "IM001", "Native Db2 PDO_ODBC persistent connections are not supported");
++		dbh->error_mode = saved_mode;
++		return 0;
++	}
++	/* PDO reapplies constructor attributes through setAttribute after the
++	 * factory. Reject this unsupported conversion flag before connecting,
++	 * including when the requested error mode would otherwise be silent. */
++	zval *utf8_option = driver_options
++		? zend_hash_index_find(Z_ARRVAL_P(driver_options), PDO_ODBC_ATTR_ASSUME_UTF8) : NULL;
++	if (utf8_option) {
++		bool assume_utf8;
++		ZVAL_DEREF(utf8_option);
++		if (!pdo_get_bool_param(&assume_utf8, utf8_option)) {
++			return 0;
++		}
++		if (assume_utf8) {
++			enum pdo_error_mode saved_mode = dbh->error_mode;
++			dbh->error_mode = PDO_ERRMODE_EXCEPTION;
++			pdo_raise_impl_error(dbh, NULL, "IM001", "ODBC_ATTR_ASSUME_UTF8 wide-character conversion is not supported by native Db2 PDO_ODBC");
++			dbh->error_mode = saved_mode;
++			return 0;
++		}
++	}
++	/* DSNAO64C has no driver-manager cursor library. Use native statement
++	 * cursor attributes, never SQL_ODBC_CURSORS or manager emulation. */
++	cursor_lib = pdo_attr_lval(driver_options, PDO_ODBC_ATTR_USE_CURSOR_LIBRARY, SQL_CUR_USE_IF_NEEDED);
++	if (cursor_lib != SQL_CUR_USE_IF_NEEDED && cursor_lib != SQL_CUR_USE_DRIVER) {
++		enum pdo_error_mode saved_mode = dbh->error_mode;
++		dbh->error_mode = PDO_ERRMODE_EXCEPTION;
++		pdo_raise_impl_error(dbh, NULL, "IM001", "Native Db2 PDO_ODBC cursor library must be SQL_CUR_USE_IF_NEEDED or SQL_CUR_USE_DRIVER; driver-manager cursor emulation is not supported");
++		dbh->error_mode = saved_mode;
++		return 0;
++	}
++	if (strchr(dbh->data_source, '=')) {
++		if (!pdo_odbc_zos_complete_connstr(dbh)) {
++			return 0;
++		}
++	} else if (!pdo_odbc_zos_connstr_length_valid(strlen(dbh->data_source))
++			|| (dbh->username && !pdo_odbc_zos_connstr_length_valid(strlen(dbh->username)))
++			|| (dbh->password && !pdo_odbc_zos_connstr_length_valid(strlen(dbh->password)))) {
++		pdo_raise_impl_error(dbh, NULL, "HY090", "Native ODBC SQLConnect input exceeds INT16_MAX bytes");
++		return 0;
++	}
++#endif
+ 	H = pecalloc(1, sizeof(*H), dbh->is_persistent);
+ 
+ 	dbh->driver_data = H;
+@@ -491,7 +666,7 @@ static int pdo_odbc_handle_factory(pdo_dbh_t *dbh, zval *driver_options) /* {{{
+ #ifdef SQL_ATTR_CONNECTION_POOLING
+ 	if (pdo_odbc_pool_on != SQL_CP_OFF) {
+ 		rc = SQLSetEnvAttr(H->env, SQL_ATTR_CP_MATCH, (void*)pdo_odbc_pool_mode, 0);
+-		if (rc != SQL_SUCCESS) {
++		if (!PDO_ODBC_STATE_SUCCEEDED(rc)) {
+ 			pdo_odbc_drv_error("SQLSetEnvAttr: SQL_ATTR_CP_MATCH");
+ 			goto fail;
+ 		}
+@@ -506,18 +681,20 @@ static int pdo_odbc_handle_factory(pdo_dbh_t *dbh, zval *driver_options) /* {{{
+ 
+ 	rc = SQLSetConnectAttr(H->dbc, SQL_ATTR_AUTOCOMMIT,
+ 		(SQLPOINTER)(intptr_t)(dbh->auto_commit ? SQL_AUTOCOMMIT_ON : SQL_AUTOCOMMIT_OFF), SQL_IS_INTEGER);
+-	if (rc != SQL_SUCCESS) {
++	if (!PDO_ODBC_STATE_SUCCEEDED(rc)) {
+ 		pdo_odbc_drv_error("SQLSetConnectAttr AUTOCOMMIT");
+ 		goto fail;
+ 	}
+ 
++#ifndef PDO_ODBC_DB2_ZOS
+ 	/* set up the cursor library, if needed, or if configured explicitly */
+ 	cursor_lib = pdo_attr_lval(driver_options, PDO_ODBC_ATTR_USE_CURSOR_LIBRARY, SQL_CUR_USE_IF_NEEDED);
+ 	rc = SQLSetConnectAttr(H->dbc, SQL_ODBC_CURSORS, (void*)cursor_lib, SQL_IS_INTEGER);
+-	if (rc != SQL_SUCCESS && cursor_lib != SQL_CUR_USE_IF_NEEDED) {
++	if (!PDO_ODBC_STATE_SUCCEEDED(rc) && cursor_lib != SQL_CUR_USE_IF_NEEDED) {
+ 		pdo_odbc_drv_error("SQLSetConnectAttr SQL_ODBC_CURSORS");
+ 		goto fail;
+ 	}
++#endif
+ 
+ 	/* a connection string may have = but not ; - i.e. "DSN=PHP" */
+ 	if (strchr(dbh->data_source, '=')) {
+@@ -526,6 +703,7 @@ static int pdo_odbc_handle_factory(pdo_dbh_t *dbh, zval *driver_options) /* {{{
+ 
+ 		use_direct = 1;
+ 
++#ifndef PDO_ODBC_DB2_ZOS
+ 		/* Force UID and PWD to be set in the DSN */
+ 		bool is_uid_set = dbh->username && *dbh->username
+ 			&& !strstr(dbh->data_source, "uid=")
+@@ -568,6 +746,11 @@ static int pdo_odbc_handle_factory(pdo_dbh_t *dbh, zval *driver_options) /* {{{
+ 
+ 		rc = SQLDriverConnect(H->dbc, NULL, (SQLCHAR *) dbh->data_source, strlen(dbh->data_source),
+ 				dsnbuf, sizeof(dsnbuf)-1, &dsnbuflen, SQL_DRIVER_NOPROMPT);
++#else
++		/* Completion and the SQLSMALLINT bound were checked before CLI setup. */
++		rc = SQLDriverConnect(H->dbc, NULL, (SQLCHAR *) dbh->data_source, (SQLSMALLINT)strlen(dbh->data_source),
++				dsnbuf, sizeof(dsnbuf)-1, &dsnbuflen, SQL_DRIVER_NOPROMPT);
++#endif
+ 	}
+ 	if (!use_direct) {
+ 		rc = SQLConnect(H->dbc, (SQLCHAR *) dbh->data_source, SQL_NTS, (SQLCHAR *) dbh->username, SQL_NTS, (SQLCHAR *) dbh->password, SQL_NTS);
 diff --git a/ext/pdo_odbc/odbc_stmt.c b/ext/pdo_odbc/odbc_stmt.c
-index 1df4e225..3a2ef641 100644
+index 1df4e225..97bbb66f 100644
 --- a/ext/pdo_odbc/odbc_stmt.c
 +++ b/ext/pdo_odbc/odbc_stmt.c
-@@ -525,6 +525,7 @@ static int odbc_stmt_fetch(pdo_stmt_t *stmt,
+@@ -25,6 +25,9 @@
+ #include "pdo/php_pdo_driver.h"
+ #include "php_pdo_odbc.h"
+ #include "php_pdo_odbc_int.h"
++#ifdef PDO_ODBC_DB2_ZOS
++#include "odbc_zos_params.h"
++#endif
+ 
+ enum pdo_odbc_conv_result {
+ 	PDO_ODBC_CONV_NOT_REQUIRED,
+@@ -53,6 +56,7 @@ static int pdo_odbc_sqltype_is_unicode(pdo_odbc_stmt *S, SQLSMALLINT sqltype)
+ 	}
+ }
+ 
++#ifndef PDO_ODBC_DB2_ZOS
+ static int pdo_odbc_utf82ucs2(pdo_stmt_t *stmt, int is_unicode, const char *buf,
+ 	zend_ulong buflen, zend_ulong *outlen)
+ {
+@@ -87,6 +91,7 @@ static int pdo_odbc_utf82ucs2(pdo_stmt_t *stmt, int is_unicode, const char *buf,
+ #endif
+ 	return PDO_ODBC_CONV_NOT_REQUIRED;
+ }
++#endif
+ 
+ static int pdo_odbc_ucs22utf8(pdo_stmt_t *stmt, int is_unicode, zval *result)
+ {
+@@ -153,9 +158,115 @@ static int odbc_stmt_dtor(pdo_stmt_t *stmt)
+ 	return 1;
+ }
+ 
++#ifdef PDO_ODBC_DB2_ZOS
++static ptrdiff_t pdo_odbc_zos_read(void *context, char *buffer, size_t capacity)
++{
++	php_stream *stream = context;
++	ssize_t length = php_stream_read(stream, buffer, capacity);
++	/* A zero read without EOF (e.g. a nonblocking stream) is not completion. */
++	if (length == 0 && !php_stream_eof(stream)) {
++		return -1;
++	}
++	return length;
++}
++
++static int pdo_odbc_zos_put(void *context, const char *buffer, SQLLEN length)
++{
++	pdo_stmt_t *stmt = context;
++	pdo_odbc_stmt *S = stmt->driver_data;
++	RETCODE rc = SQLPutData(S->stmt, (SQLPOINTER) buffer, length);
++	if (rc == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO) {
++		return 1;
++	}
++	/* Capture diagnostics before SQLCancel/SQLCloseCursor can overwrite them. */
++	pdo_odbc_stmt_error("SQLPutData");
++	return 0;
++}
++
++static int pdo_odbc_zos_send_parameter(pdo_stmt_t *stmt,
++		struct pdo_bound_param_data *param)
++{
++	zval *parameter = Z_ISREF(param->parameter) ?
++		Z_REFVAL(param->parameter) : &param->parameter;
++	enum pdo_odbc_zos_transfer_result result;
++	if (Z_TYPE_P(parameter) == IS_RESOURCE) {
++		php_stream *stream;
++		php_stream_from_zval_no_verify(stream, parameter);
++		if (!stream) {
++			pdo_raise_impl_error(stmt->dbh, stmt, "HY000", "Input LOB is no longer a stream");
++			return 0;
++		}
++		result = pdo_odbc_zos_put_stream(pdo_odbc_zos_read, stream,
++			pdo_odbc_zos_put, stmt);
++	} else {
++		convert_to_string(parameter);
++		result = pdo_odbc_zos_put_string(Z_STRVAL_P(parameter), Z_STRLEN_P(parameter),
++			pdo_odbc_zos_put, stmt);
++	}
++	if (result == PDO_ODBC_ZOS_TRANSFER_OK) {
++		return 1;
++	}
++	if (result != PDO_ODBC_ZOS_TRANSFER_PUT) {
++		pdo_raise_impl_error(stmt->dbh, stmt,
++			result == PDO_ODBC_ZOS_TRANSFER_LENGTH ? "HY090" : "HY000",
++			result == PDO_ODBC_ZOS_TRANSFER_LENGTH ?
++			"Native Db2 input exceeds the 32-bit SQLLEN limit" : "Error reading input LOB stream");
++	}
++	return 0;
++}
++
++static int pdo_odbc_zos_param_pre(pdo_stmt_t *stmt,
++		struct pdo_bound_param_data *param)
++{
++	pdo_odbc_param *P = param->driver_data;
++	zval *parameter = Z_ISREF(param->parameter) ?
++		Z_REFVAL(param->parameter) : &param->parameter;
++	SQLLEN length;
++
++	/* Test NULL before LOB conversion, keeping NULL distinct from empty input. */
++	if (Z_TYPE_P(parameter) == IS_NULL || PDO_PARAM_TYPE(param->param_type) == PDO_PARAM_NULL) {
++		P->len = SQL_NULL_DATA;
++		return 1;
++	}
++	if (P->paramtype == SQL_PARAM_OUTPUT) {
++		P->len = 0;
++		return 1;
++	}
++	if (PDO_PARAM_TYPE(param->param_type) == PDO_PARAM_LOB && Z_TYPE_P(parameter) == IS_RESOURCE) {
++		php_stream *stream;
++		php_stream_from_zval_no_verify(stream, parameter);
++		if (!stream) {
++			pdo_raise_impl_error(stmt->dbh, stmt, "HY000", "Input LOB is no longer a stream");
++			return 0;
++		}
++		/* Do not stat: nonstat streams and the current seek offset are valid.
++		 * Native Db2 accepts the unknown-length data-at-execution protocol. */
++		P->len = SQL_DATA_AT_EXEC;
++		return 1;
++	}
++	convert_to_string(parameter);
++	if (!pdo_odbc_zos_length(Z_STRLEN_P(parameter), &length) ||
++		(P->outbuf && (size_t) length > P->outbuf_payload)) {
++		pdo_raise_impl_error(stmt->dbh, stmt, "HY090", "Input parameter exceeds native buffer capacity");
++		return 0;
++	}
++	if (P->outbuf) {
++		memcpy(P->outbuf, Z_STRVAL_P(parameter), (size_t) length);
++		P->outbuf[length] = '\0';
++		P->len = length;
++	} else {
++		P->len = SQL_DATA_AT_EXEC;
++	}
++	return 1;
++}
++#endif
++
+ static int odbc_stmt_execute(pdo_stmt_t *stmt)
+ {
+-	RETCODE rc, rc1;
++	RETCODE rc;
++#ifndef PDO_ODBC_DB2_ZOS
++	RETCODE rc1;
++#endif
+ 	pdo_odbc_stmt *S = (pdo_odbc_stmt*)stmt->driver_data;
+ 	char *buf = NULL;
+ 	SQLLEN row_count = -1;
+@@ -171,6 +282,13 @@ static int odbc_stmt_execute(pdo_stmt_t *stmt)
+ 
+ 		rc = SQLParamData(S->stmt, (SQLPOINTER*)&param);
+ 		if (rc == SQL_NEED_DATA) {
++#ifdef PDO_ODBC_DB2_ZOS
++			if (!pdo_odbc_zos_send_parameter(stmt, param)) {
++				SQLCancel(S->stmt);
++				SQLCloseCursor(S->stmt);
++				return 0;
++			}
++#else
+ 			php_stream *stm;
+ 			int len;
+ 			pdo_odbc_param *P;
+@@ -244,6 +362,7 @@ static int odbc_stmt_execute(pdo_stmt_t *stmt)
+ 					rc = rc1;
+ 				}
+ 			} while (1);
++#endif
+ 		}
+ 	}
+ 
+@@ -261,6 +380,10 @@ static int odbc_stmt_execute(pdo_stmt_t *stmt)
+ 
+ 		default:
+ 			pdo_odbc_stmt_error("SQLExecute");
++#ifdef PDO_ODBC_DB2_ZOS
++			SQLCancel(S->stmt);
++			SQLCloseCursor(S->stmt);
++#endif
+ 			return 0;
+ 	}
+ 
+@@ -305,6 +428,12 @@ static int odbc_stmt_param_hook(pdo_stmt_t *stmt, struct pdo_bound_param_data *p
+ 			case PDO_PARAM_EVT_FREE:
+ 				P = param->driver_data;
+ 				if (P) {
++#ifdef PDO_ODBC_DB2_ZOS
++					if (P->outbuf) {
++						efree(P->outbuf);
++					}
++					param->driver_data = NULL;
++#endif
+ 					efree(P);
+ 				}
+ 				break;
+@@ -323,6 +452,13 @@ static int odbc_stmt_param_hook(pdo_stmt_t *stmt, struct pdo_bound_param_data *p
+ 						break;
+ 				}
+ 
++#ifdef PDO_ODBC_DB2_ZOS
++				if (param->paramno < 0 || param->paramno >= UINT16_MAX ||
++					(param->max_value_len > 0 && (zend_ulong) param->max_value_len > PDO_ODBC_ZOS_MAX_LEN)) {
++					pdo_raise_impl_error(stmt->dbh, stmt, "HY090", "Native parameter number or length out of range");
++					return 0;
++				}
++#endif
+ 				rc = SQLDescribeParam(S->stmt, (SQLUSMALLINT) param->paramno+1, &sqltype, &precision, &scale, &nullable);
+ 				if (rc != SQL_SUCCESS && rc != SQL_SUCCESS_WITH_INFO) {
+ 					/* MS Access, for instance, doesn't support SQLDescribeParam,
+@@ -345,7 +481,11 @@ static int odbc_stmt_param_hook(pdo_stmt_t *stmt, struct pdo_bound_param_data *p
+ 						precision = param->max_value_len;
+ 					}
+ 				}
++#ifdef PDO_ODBC_DB2_ZOS
++				if (pdo_odbc_zos_binary_input(sqltype)) {
++#else
+ 				if (sqltype == SQL_BINARY || sqltype == SQL_VARBINARY || sqltype == SQL_LONGVARBINARY) {
++#endif
+ 					ctype = SQL_C_BINARY;
+ 				} else {
+ 					ctype = SQL_C_CHAR;
+@@ -356,6 +496,10 @@ static int odbc_stmt_param_hook(pdo_stmt_t *stmt, struct pdo_bound_param_data *p
+ 
+ 				P->len = 0; /* is re-populated each EXEC_PRE */
+ 				P->outbuf = NULL;
++#ifdef PDO_ODBC_DB2_ZOS
++				P->outbuf_capacity = 0;
++				P->outbuf_payload = 0;
++#endif
+ 
+ 				P->is_unicode = pdo_odbc_sqltype_is_unicode(S, sqltype);
+ 				if (P->is_unicode) {
+@@ -374,11 +518,21 @@ static int odbc_stmt_param_hook(pdo_stmt_t *stmt, struct pdo_bound_param_data *p
+ 				if (P->paramtype != SQL_PARAM_INPUT) {
+ 					if (PDO_PARAM_TYPE(param->param_type) != PDO_PARAM_NULL) {
+ 						/* need an explicit buffer to hold result */
++#ifdef PDO_ODBC_DB2_ZOS
++						size_t requested = param->max_value_len > 0 ? (size_t) param->max_value_len : (size_t) precision;
++						if (!pdo_odbc_zos_capacity(requested, P->is_unicode,
++								&P->outbuf_payload, &P->outbuf_capacity)) {
++							pdo_raise_impl_error(stmt->dbh, stmt, "HY090", "Output parameter exceeds native buffer limit");
++							return 0;
++						}
++						P->outbuf = ecalloc(1, (size_t) P->outbuf_capacity);
++#else
+ 						P->len = param->max_value_len > 0 ? param->max_value_len : precision;
+ 						if (P->is_unicode) {
+ 							P->len *= 2;
+ 						}
+ 						P->outbuf = emalloc(P->len + (P->is_unicode ? 2:1));
++#endif
+ 					}
+ 				}
+ 
+@@ -392,7 +546,11 @@ static int odbc_stmt_param_hook(pdo_stmt_t *stmt, struct pdo_bound_param_data *p
+ 						P->paramtype == SQL_PARAM_INPUT ?
+ 							(SQLPOINTER)param :
+ 							P->outbuf,
++#ifdef PDO_ODBC_DB2_ZOS
++						P->outbuf_capacity,
++#else
+ 						P->len,
++#endif
+ 						&P->len
+ 						);
+ 
+@@ -404,6 +562,9 @@ static int odbc_stmt_param_hook(pdo_stmt_t *stmt, struct pdo_bound_param_data *p
+ 			}
+ 
+ 			case PDO_PARAM_EVT_EXEC_PRE:
++#ifdef PDO_ODBC_DB2_ZOS
++				return pdo_odbc_zos_param_pre(stmt, param);
++#else
+ 				P = param->driver_data;
+ 				if (!Z_ISREF(param->parameter)) {
+ 					parameter = &param->parameter;
+@@ -488,11 +649,20 @@ static int odbc_stmt_param_hook(pdo_stmt_t *stmt, struct pdo_bound_param_data *p
+ 					}
+ 				}
+ 				return 1;
++#endif
+ 
+ 			case PDO_PARAM_EVT_EXEC_POST:
+ 				P = param->driver_data;
+ 
+ 				if (P->outbuf) {
++#ifdef PDO_ODBC_DB2_ZOS
++					/* Reject SQL_NO_TOTAL, truncation and other invalid indicators
++					 * before destroying or reading the caller's bound value. */
++					if (!pdo_odbc_zos_indicator(P->len, P->outbuf_payload)) {
++						pdo_raise_impl_error(stmt->dbh, stmt, "22001", "Output parameter truncated or invalid length returned");
++						return 0;
++					}
++#endif
+ 					if (Z_ISREF(param->parameter)) {
+ 						parameter = Z_REFVAL(param->parameter);
+ 					} else {
+@@ -525,6 +695,7 @@ static int odbc_stmt_fetch(pdo_stmt_t *stmt,
  {
  	RETCODE rc;
  	SQLSMALLINT odbcori;
@@ -177,7 +864,7 @@ index 1df4e225..3a2ef641 100644
  	pdo_odbc_stmt *S = (pdo_odbc_stmt*)stmt->driver_data;
  
  	switch (ori) {
-@@ -538,13 +539,27 @@ static int odbc_stmt_fetch(pdo_stmt_t *stmt,
+@@ -538,13 +709,32 @@ static int odbc_stmt_fetch(pdo_stmt_t *stmt,
  			strcpy(stmt->error_code, "HY106");
  			return 0;
  	}
@@ -187,11 +874,16 @@ index 1df4e225..3a2ef641 100644
 +		fetch_api = "SQLFetch";
 +		rc = SQLFetch(S->stmt);
 +	} else {
-+		if (offset > INT32_MAX || offset < INT32_MIN) {
-+			strcpy(stmt->error_code, "HY106");
-+			return 0;
++		SQLLEN fetch_offset = 0;
++		/* ODBC ignores the offset except for ABSOLUTE and RELATIVE. */
++		if (ori == PDO_FETCH_ORI_ABS || ori == PDO_FETCH_ORI_REL) {
++			if (offset > INT32_MAX || offset < INT32_MIN) {
++				strcpy(stmt->error_code, "HY106");
++				return 0;
++			}
++			fetch_offset = (SQLLEN)offset;
 +		}
-+		rc = SQLFetchScroll(S->stmt, odbcori, (SQLLEN)offset);
++		rc = SQLFetchScroll(S->stmt, odbcori, fetch_offset);
 +	}
 +#else
  	rc = SQLFetchScroll(S->stmt, odbcori, offset);
@@ -206,7 +898,7 @@ index 1df4e225..3a2ef641 100644
  		return 1;
  	}
  
-@@ -553,7 +568,7 @@ static int odbc_stmt_fetch(pdo_stmt_t *stmt,
+@@ -553,7 +743,7 @@ static int odbc_stmt_fetch(pdo_stmt_t *stmt,
  		return 0;
  	}
  
@@ -215,8 +907,481 @@ index 1df4e225..3a2ef641 100644
  
  	return 0;
  }
+@@ -563,14 +753,27 @@ static int odbc_stmt_describe(pdo_stmt_t *stmt, int colno)
+ 	pdo_odbc_stmt *S = (pdo_odbc_stmt*)stmt->driver_data;
+ 	struct pdo_column_data *col = &stmt->columns[colno];
+ 	RETCODE rc;
+-	SQLSMALLINT colnamelen;
+-	SQLULEN	colsize;
++	SQLSMALLINT colnamelen = 0;
++	SQLULEN	colsize = 0;
+ 	SQLLEN displaysize = 0;
+ 
+ 	rc = SQLDescribeCol(S->stmt, colno+1, (SQLCHAR *) S->cols[colno].colname,
+ 			sizeof(S->cols[colno].colname)-1, &colnamelen,
+ 			&S->cols[colno].coltype, &colsize, NULL, NULL);
+ 
++#ifdef PDO_ODBC_DB2_ZOS
++	if (rc != SQL_SUCCESS && rc != SQL_SUCCESS_WITH_INFO) {
++		pdo_odbc_stmt_error("SQLDescribeCol");
++		return 0;
++	}
++	/* NameLength excludes the NUL, while BufferLength includes it. The
++	 * reported length can be the untruncated length, not bytes in colname. */
++	if (!pdo_odbc_zos_name_length(colnamelen, sizeof(S->cols[colno].colname)-1)) {
++		pdo_raise_impl_error(stmt->dbh, stmt, "22001", "Native column name truncated or invalid length returned");
++		return 0;
++	}
++#endif
++
+ 	/* This fixes a known issue with SQL Server and (max) lengths,
+ 	may affect others as well.  If we are SQL_VARCHAR,
+ 	SQL_VARBINARY, or SQL_WVARCHAR (or any of the long variations)
+@@ -596,6 +799,12 @@ static int odbc_stmt_describe(pdo_stmt_t *stmt, int colno)
+ 		}
+ 	}
+ 
++#ifdef PDO_ODBC_DB2_ZOS
++	/* A BLOB has no character display-size requirement: always stream it. */
++	if (pdo_odbc_zos_blob(S->cols[colno].coltype)) {
++		S->going_long = 1;
++	} else {
++#endif
+ 	rc = SQLColAttribute(S->stmt, colno+1,
+ 			SQL_DESC_DISPLAY_SIZE,
+ 			NULL, 0, NULL, &displaysize);
+@@ -606,6 +815,13 @@ static int odbc_stmt_describe(pdo_stmt_t *stmt, int colno)
+ 			return 0;
+ 		}
+ 	}
++#ifdef PDO_ODBC_DB2_ZOS
++	}
++	if (displaysize < 0) {
++		pdo_raise_impl_error(stmt->dbh, stmt, "HY090", "Invalid native column display size");
++		return 0;
++	}
++#endif
+ 	colsize = displaysize;
+ 
+ 	col->maxlen = S->cols[colno].datalen = colsize;
+@@ -646,8 +862,89 @@ static int odbc_stmt_get_column_meta(pdo_stmt_t *stmt, zend_long colno, zval *re
+ 	return 1;
+ }
+ 
++#ifdef PDO_ODBC_DB2_ZOS
++static int pdo_odbc_zos_get_col(pdo_stmt_t *stmt, int colno, zval *result)
++{
++	pdo_odbc_stmt *S = stmt->driver_data;
++	pdo_odbc_column *C = &S->cols[colno];
++	if (!C->is_long) {
++		if (!pdo_odbc_zos_indicator(C->fetched_len, C->datalen)) {
++			pdo_raise_impl_error(stmt->dbh, stmt, "22001", "Native bound column truncated or invalid length returned");
++			return 0;
++		}
++		if (C->fetched_len == SQL_NULL_DATA) {
++			ZVAL_NULL(result);
++		} else {
++			ZVAL_STRINGL(result, C->data, (size_t) C->fetched_len);
++		}
++		return 1;
++	} else {
++		/* Distinct native BLOB is raw bytes, as in python-ibmdb. Standard
++		 * SQL_BINARY/VARBINARY retain the existing SQL_C_CHAR hex contract. */
++		int binary = C->is_unicode || pdo_odbc_zos_blob(C->coltype);
++		size_t payload = binary ? 256 : 255;
++		size_t used = 0;
++		int first = 1;
++		zend_string *str = zend_string_init("", 0, 0);
++		for (;;) {
++			size_t amount;
++			int truncated;
++			RETCODE rc;
++			C->fetched_len = SQL_NO_TOTAL;
++			/* Never retain bytes from a preceding, possibly longer chunk. */
++			memset(C->data, 0, 256);
++			rc = SQLGetData(S->stmt, colno+1, binary ? SQL_C_BINARY : SQL_C_CHAR,
++				C->data, 256, &C->fetched_len);
++			if (rc == SQL_NO_DATA && !first) {
++				break;
++			}
++			if (rc != SQL_SUCCESS && rc != SQL_SUCCESS_WITH_INFO) {
++				zend_string_release(str);
++				pdo_odbc_stmt_error("SQLGetData");
++				return 0;
++			}
++			if (C->fetched_len == SQL_NULL_DATA && first) {
++				zend_string_release(str);
++				ZVAL_NULL(result);
++				return 1;
++			}
++			truncated = rc == SQL_SUCCESS_WITH_INFO &&
++				(C->fetched_len == SQL_NO_TOTAL || C->fetched_len > (SQLLEN) payload);
++			if (!pdo_odbc_zos_result_chunk(C->fetched_len, truncated, payload, used, &amount)) {
++				zend_string_release(str);
++				pdo_raise_impl_error(stmt->dbh, stmt, "22001", "Native column length unknown, truncated or exceeds 32-bit limit");
++				return 0;
++			}
++			if (!binary && (C->data[amount] != '\0' ||
++				(truncated && memchr(C->data, '\0', amount) != NULL))) {
++				/* A short truncated character chunk may end at a character
++				 * boundary, or contain an embedded NUL. Neither its indicator
++				 * nor the first NUL proves how many payload bytes were written.
++				 * Final known-length text, however, may contain embedded NULs. */
++				zend_string_release(str);
++				pdo_raise_impl_error(stmt->dbh, stmt, "22001", "Native character chunk lacks termination or has ambiguous truncated length");
++				return 0;
++			}
++			str = zend_string_realloc(str, used + amount, 0);
++			memcpy(ZSTR_VAL(str) + used, C->data, amount);
++			used += amount;
++			first = 0;
++			if (!truncated) {
++				break;
++			}
++		}
++		ZSTR_VAL(str)[used] = '\0';
++		ZVAL_STR(result, str);
++		return 1;
++	}
++}
++#endif
++
+ static int odbc_stmt_get_col(pdo_stmt_t *stmt, int colno, zval *result, enum pdo_param_type *type)
+ {
++#ifdef PDO_ODBC_DB2_ZOS
++	return pdo_odbc_zos_get_col(stmt, colno, result);
++#else
+ 	pdo_odbc_stmt *S = (pdo_odbc_stmt*)stmt->driver_data;
+ 	pdo_odbc_column *C = &S->cols[colno];
+ 
+@@ -761,6 +1058,7 @@ unicode_conv:
+ 			return 1;
+ 	}
+ 	return 1;
++#endif
+ }
+ 
+ static int odbc_stmt_set_param(pdo_stmt_t *stmt, zend_long attr, zval *val)
+@@ -771,6 +1069,12 @@ static int odbc_stmt_set_param(pdo_stmt_t *stmt, zend_long attr, zval *val)
+ 	switch (attr) {
+ 		case PDO_ATTR_CURSOR_NAME:
+ 			convert_to_string(val);
++#ifdef PDO_ODBC_DB2_ZOS
++			if (Z_STRLEN_P(val) > INT16_MAX) {
++				pdo_raise_impl_error(stmt->dbh, stmt, "HY090", "Native cursor name exceeds SQLSMALLINT limit");
++				return 0;
++			}
++#endif
+ 			rc = SQLSetCursorName(S->stmt, (SQLCHAR *) Z_STRVAL_P(val), Z_STRLEN_P(val));
+ 
+ 			if (rc == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO) {
+@@ -780,8 +1084,18 @@ static int odbc_stmt_set_param(pdo_stmt_t *stmt, zend_long attr, zval *val)
+ 			return 0;
+ 
+ 		case PDO_ODBC_ATTR_ASSUME_UTF8:
++#ifdef PDO_ODBC_DB2_ZOS
++			if (zval_is_true(val)) {
++				pdo_raise_impl_error(stmt->dbh, stmt, "IM001",
++					"PDO_ODBC_ATTR_ASSUME_UTF8 wide-character conversion is not supported by native Db2; configure the narrow application CCSID separately");
++				return 0;
++			}
++			S->assume_utf8 = 0;
++			return 1;
++#else
+ 			S->assume_utf8 = zval_is_true(val);
+ 			return 0;
++#endif
+ 		default:
+ 			strcpy(S->einfo.last_err_msg, "Unknown Attribute");
+ 			S->einfo.what = "setAttribute";
+@@ -803,6 +1117,12 @@ static int odbc_stmt_get_attr(pdo_stmt_t *stmt, zend_long attr, zval *val)
+ 			rc = SQLGetCursorName(S->stmt, (SQLCHAR *) buf, sizeof(buf), &len);
+ 
+ 			if (rc == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO) {
++#ifdef PDO_ODBC_DB2_ZOS
++				if (!pdo_odbc_zos_name_length(len, sizeof(buf))) {
++					pdo_raise_impl_error(stmt->dbh, stmt, "22001", "Native cursor name truncated or invalid length returned");
++					return 0;
++				}
++#endif
+ 				ZVAL_STRINGL(val, buf, len);
+ 				return 1;
+ 			}
+diff --git a/ext/pdo_odbc/odbc_zos_driver.h b/ext/pdo_odbc/odbc_zos_driver.h
+new file mode 100644
+index 00000000..a26ff101
+--- /dev/null
++++ b/ext/pdo_odbc/odbc_zos_driver.h
+@@ -0,0 +1,117 @@
++/* Native Db2 connection helpers. No PHP, CLI headers or database required. */
++#ifndef PDO_ODBC_ZOS_DRIVER_H
++#define PDO_ODBC_ZOS_DRIVER_H
++
++#include <stddef.h>
++#include <stdint.h>
++#include <string.h>
++
++#define PDO_ODBC_ZOS_UID 1u
++#define PDO_ODBC_ZOS_PWD 2u
++
++static inline int pdo_odbc_zos_space(unsigned char c)
++{
++	return c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '\f' || c == '\v';
++}
++
++static inline unsigned char pdo_odbc_zos_upper(unsigned char c)
++{
++	return c >= 'a' && c <= 'z' ? c - ('a' - 'A') : c;
++}
++
++/* Only attribute names at the start of semicolon-delimited fields count.
++ * A brace-quoted value can contain semicolons; }} encodes a literal }.
++ * An unterminated quoted value consumes the rest (never invent a key in it). */
++static inline unsigned pdo_odbc_zos_credentials(const char *dsn)
++{
++	const char *p = dsn;
++	unsigned found = 0;
++
++	while (*p) {
++		const char *key, *end;
++		while (*p == ';' || pdo_odbc_zos_space((unsigned char)*p)) {
++			p++;
++		}
++		key = p;
++		while (*p && *p != '=' && *p != ';') {
++			p++;
++		}
++		if (*p != '=') {
++			continue;
++		}
++		end = p;
++		while (end > key && pdo_odbc_zos_space((unsigned char)end[-1])) {
++			end--;
++		}
++		if (end - key == 3) {
++			unsigned char a = pdo_odbc_zos_upper((unsigned char)key[0]);
++			unsigned char b = pdo_odbc_zos_upper((unsigned char)key[1]);
++			unsigned char c = pdo_odbc_zos_upper((unsigned char)key[2]);
++			if (a == 'U' && b == 'I' && c == 'D') {
++				found |= PDO_ODBC_ZOS_UID;
++			} else if (a == 'P' && b == 'W' && c == 'D') {
++				found |= PDO_ODBC_ZOS_PWD;
++			}
++		}
++		p++;
++		while (pdo_odbc_zos_space((unsigned char)*p)) {
++			p++;
++		}
++		if (*p == '{') {
++			p++;
++			while (*p) {
++				if (*p++ == '}') {
++					if (*p == '}') {
++						p++;
++					} else {
++						break;
++					}
++				}
++			}
++		}
++		while (*p && *p != ';') {
++			p++;
++		}
++	}
++	return found;
++}
++
++static inline int pdo_odbc_zos_sql_length_valid(size_t length)
++{
++	return length <= INT32_MAX;
++}
++
++static inline int pdo_odbc_zos_connstr_length_valid(size_t length)
++{
++	return length <= INT16_MAX;
++}
++
++/* Account for ;UID= or ;PWD= and a value, without size_t overflow. */
++static inline int pdo_odbc_zos_append_length(size_t *length, size_t value_length)
++{
++	if (!pdo_odbc_zos_connstr_length_valid(*length)
++			|| value_length > INT16_MAX - 5u
++			|| *length > INT16_MAX - 5u - value_length) {
++		return 0;
++	}
++	*length += 5u + value_length;
++	return 1;
++}
++
++/* The driver calls SQLPrepare with SQL_NTS. Reject embedded NUL instead of
++ * preparing a silently truncated query; still enforce its SQLINTEGER bound. */
++static inline int pdo_odbc_zos_prepare_text_valid(const char *sql, size_t length)
++{
++	return pdo_odbc_zos_sql_length_valid(length) && memchr(sql, '\0', length) == NULL;
++}
++
++/* CLI reports the full available length even when it truncates output. */
++static inline size_t pdo_odbc_zos_output_length(int reported, size_t capacity)
++{
++	if (reported < 0 || capacity == 0) {
++		return 0;
++	}
++	return (size_t)reported < capacity ? (size_t)reported : capacity - 1;
++}
++
++#endif
+diff --git a/ext/pdo_odbc/odbc_zos_params.h b/ext/pdo_odbc/odbc_zos_params.h
+new file mode 100644
+index 00000000..7a0f8d69
+--- /dev/null
++++ b/ext/pdo_odbc/odbc_zos_params.h
+@@ -0,0 +1,144 @@
++/* Native Db2 helpers. SQLLEN is signed 32-bit even in an LP64 application.
++ * No SDK declarations live here; callers supply the SQL types/constants. */
++#ifndef PDO_ODBC_ZOS_PARAMS_H
++#define PDO_ODBC_ZOS_PARAMS_H
++
++#include <stddef.h>
++#include <stdint.h>
++
++#define PDO_ODBC_ZOS_MAX_LEN ((size_t) INT32_MAX)
++#define PDO_ODBC_ZOS_PUT_CHUNK 8192
++
++static inline int pdo_odbc_zos_length(size_t length, SQLLEN *out)
++{
++	if (length > PDO_ODBC_ZOS_MAX_LEN) {
++		return 0;
++	}
++	*out = (SQLLEN) length;
++	return 1;
++}
++
++/* Capacity includes the terminator reserved for SQL_C_CHAR (or UCS-2).
++ * Keep it independent of the mutable StrLen_or_Ind value. */
++static inline int pdo_odbc_zos_capacity(size_t requested, int unicode,
++		size_t *payload, SQLLEN *capacity)
++{
++	size_t terminator = unicode ? 2 : 1;
++	size_t factor = unicode ? 2 : 1;
++	if (requested > (PDO_ODBC_ZOS_MAX_LEN - terminator) / factor) {
++		return 0;
++	}
++	*payload = requested * factor;
++	return pdo_odbc_zos_length(*payload + terminator, capacity);
++}
++
++static inline int pdo_odbc_zos_indicator(SQLLEN length, size_t capacity)
++{
++	return length == SQL_NULL_DATA ||
++		(length >= 0 && (size_t) length <= capacity);
++}
++
++/* A character name needs room for the terminator in the advertised buffer. */
++static inline int pdo_odbc_zos_name_length(SQLSMALLINT length, size_t capacity)
++{
++	return length >= 0 && (size_t) length < capacity;
++}
++
++static inline int pdo_odbc_zos_blob(SQLSMALLINT type)
++{
++#ifdef SQL_BLOB
++	/* Only a distinct native type may change the standard hex result contract. */
++	return type == SQL_BLOB && type != SQL_BINARY && type != SQL_VARBINARY &&
++		type != SQL_LONGVARBINARY;
++#else
++	(void) type;
++	return 0;
++#endif
++}
++
++static inline int pdo_odbc_zos_binary_input(SQLSMALLINT type)
++{
++	return type == SQL_BINARY || type == SQL_VARBINARY ||
++		type == SQL_LONGVARBINARY || pdo_odbc_zos_blob(type);
++}
++
++/* Validate SQLGetData's current chunk without inferring binary lengths from
++ * NUL bytes. SQL_NO_TOTAL is usable only for a full, truncated chunk. */
++static inline int pdo_odbc_zos_result_chunk(SQLLEN indicator, int truncated,
++		size_t payload, size_t used, size_t *amount)
++{
++	if (truncated) {
++		if (indicator != SQL_NO_TOTAL &&
++			(indicator < 0 || (size_t) indicator <= payload)) {
++			return 0;
++		}
++		*amount = payload;
++	} else {
++		if (indicator < 0 || (size_t) indicator > payload) {
++			return 0;
++		}
++		*amount = (size_t) indicator;
++	}
++	return used <= PDO_ODBC_ZOS_MAX_LEN && *amount <= PDO_ODBC_ZOS_MAX_LEN - used;
++}
++
++enum pdo_odbc_zos_transfer_result {
++	PDO_ODBC_ZOS_TRANSFER_OK,
++	PDO_ODBC_ZOS_TRANSFER_READ,
++	PDO_ODBC_ZOS_TRANSFER_PUT,
++	PDO_ODBC_ZOS_TRANSFER_LENGTH
++};
++
++typedef ptrdiff_t (*pdo_odbc_zos_read_fn)(void *, char *, size_t);
++typedef int (*pdo_odbc_zos_put_fn)(void *, const char *, SQLLEN);
++
++static inline enum pdo_odbc_zos_transfer_result pdo_odbc_zos_put_string(
++		const char *data, size_t length, pdo_odbc_zos_put_fn put, void *context)
++{
++	SQLLEN checked;
++	size_t offset = 0;
++	if (!pdo_odbc_zos_length(length, &checked)) {
++		return PDO_ODBC_ZOS_TRANSFER_LENGTH;
++	}
++	/* A zero-length value is not NULL: SQLPutData must still be called. */
++	do {
++		size_t amount = length - offset;
++		if (amount > PDO_ODBC_ZOS_PUT_CHUNK) {
++			amount = PDO_ODBC_ZOS_PUT_CHUNK;
++		}
++		if (!put(context, data + offset, (SQLLEN) amount)) {
++			return PDO_ODBC_ZOS_TRANSFER_PUT;
++		}
++		offset += amount;
++	} while (offset < length);
++	return PDO_ODBC_ZOS_TRANSFER_OK;
++}
++
++static inline enum pdo_odbc_zos_transfer_result pdo_odbc_zos_put_stream(
++		pdo_odbc_zos_read_fn read, void *stream,
++		pdo_odbc_zos_put_fn put, void *context)
++{
++	char buffer[PDO_ODBC_ZOS_PUT_CHUNK];
++	size_t total = 0;
++	for (;;) {
++		ptrdiff_t amount = read(stream, buffer, sizeof(buffer));
++		if (amount < 0 || (size_t) amount > sizeof(buffer)) {
++			return PDO_ODBC_ZOS_TRANSFER_READ;
++		}
++		if (amount == 0) {
++			if (total == 0 && !put(context, buffer, 0)) {
++				return PDO_ODBC_ZOS_TRANSFER_PUT;
++			}
++			return PDO_ODBC_ZOS_TRANSFER_OK;
++		}
++		if ((size_t) amount > PDO_ODBC_ZOS_MAX_LEN - total) {
++			return PDO_ODBC_ZOS_TRANSFER_LENGTH;
++		}
++		if (!put(context, buffer, (SQLLEN) amount)) {
++			return PDO_ODBC_ZOS_TRANSFER_PUT;
++		}
++		total += (size_t) amount;
++	}
++}
++
++#endif
 diff --git a/ext/pdo_odbc/php_pdo_odbc_int.h b/ext/pdo_odbc/php_pdo_odbc_int.h
-index 0a453a00..94345217 100644
+index 0a453a00..71ce2b29 100644
 --- a/ext/pdo_odbc/php_pdo_odbc_int.h
 +++ b/ext/pdo_odbc/php_pdo_odbc_int.h
 @@ -97,8 +97,18 @@
@@ -239,6 +1404,18 @@ index 0a453a00..94345217 100644
  # define PDO_ODBC_HENV		SQLHANDLE
  # define PDO_ODBC_HDBC		SQLHANDLE
  # define PDO_ODBC_HSTMT		SQLHANDLE
+@@ -157,6 +167,11 @@ typedef struct {
+ 	SQLLEN len;
+ 	SQLSMALLINT paramtype;
+ 	char *outbuf;
++#ifdef PDO_ODBC_DB2_ZOS
++	/* SQLBindParameter buffer length; never reuse its mutable indicator. */
++	SQLLEN outbuf_capacity;
++	size_t outbuf_payload;
++#endif
+ 	unsigned is_unicode:1;
+ 	unsigned _spare:31;
+ } pdo_odbc_param;
 diff --git a/ext/pdo_odbc/tests/driver_registration.phpt b/ext/pdo_odbc/tests/driver_registration.phpt
 new file mode 100644
 index 00000000..1fbf4399
@@ -258,4 +1435,110 @@ index 00000000..1fbf4399
 +?>
 +--EXPECT--
 +bool(true)
++bool(true)
+diff --git a/ext/pdo_odbc/tests/gh16450.phpt b/ext/pdo_odbc/tests/gh16450.phpt
+index e29d7672..95713a5e 100644
+--- a/ext/pdo_odbc/tests/gh16450.phpt
++++ b/ext/pdo_odbc/tests/gh16450.phpt
+@@ -4,6 +4,9 @@ GH-16450 (PDO_ODBC can inject garbage into field values)
+ pdo_odbc
+ --SKIPIF--
+ <?php
++if (PHP_OS_FAMILY !== 'Windows') {
++    die('skip Microsoft Access ODBC driver required');
++}
+ $dbpath = __DIR__ . "/test.mdb";
+ try {
+     new PDO("odbc:Driver={Microsoft Access Driver (*.mdb, *.accdb)};Dbq=$dbpath;Uid=Admin;Pwd=;");
+diff --git a/ext/pdo_odbc/tests/zos_driver_options_rejected.phpt b/ext/pdo_odbc/tests/zos_driver_options_rejected.phpt
+new file mode 100644
+index 00000000..67eac326
+--- /dev/null
++++ b/ext/pdo_odbc/tests/zos_driver_options_rejected.phpt
+@@ -0,0 +1,42 @@
++--TEST--
++Native Db2 PDO_ODBC rejects unsupported options and oversized DSNs before runtime access
++--EXTENSIONS--
++pdo_odbc
++--SKIPIF--
++<?php
++ob_start();
++(new ReflectionExtension('pdo_odbc'))->info();
++$info = ob_get_clean();
++if (strpos($info, 'ibm-db2-zos') === false) die('skip native Db2 PDO_ODBC only');
++?>
++--FILE--
++<?php
++putenv('DSNAOINI=/__pdo_odbc_zos_driver_missing__/must-not-be-read.ini');
++foreach ([PDO::ERRMODE_EXCEPTION, PDO::ERRMODE_SILENT, PDO::ERRMODE_WARNING] as $mode) {
++    foreach ([
++        [PDO::ODBC_ATTR_ASSUME_UTF8 => true],
++        [PDO::ODBC_ATTR_USE_CURSOR_LIBRARY => PDO::ODBC_SQL_USE_ODBC],
++    ] as $options) {
++        try {
++            new PDO('odbc:__must_not_connect__', '', '', $options + [PDO::ATTR_ERRMODE => $mode]);
++            echo "unexpected connection\n";
++        } catch (PDOException $e) {
++            echo $e->getCode(), "\n";
++        }
++    }
++}
++try {
++    new PDO('odbc:DSN=' . str_repeat('x', 32768), '', '', [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
++    echo "unexpected long DSN connection\n";
++} catch (PDOException $e) {
++    echo $e->getCode(), "\n";
++}
++?>
++--EXPECT--
++IM001
++IM001
++IM001
++IM001
++IM001
++IM001
++HY090
+diff --git a/ext/pdo_odbc/tests/zos_driver_persistent_rejected.phpt b/ext/pdo_odbc/tests/zos_driver_persistent_rejected.phpt
+new file mode 100644
+index 00000000..05f7e869
+--- /dev/null
++++ b/ext/pdo_odbc/tests/zos_driver_persistent_rejected.phpt
+@@ -0,0 +1,38 @@
++--TEST--
++Native Db2 PDO_ODBC rejects persistence before consulting the DSN or CLI runtime
++--EXTENSIONS--
++pdo_odbc
++--SKIPIF--
++<?php
++ob_start();
++(new ReflectionExtension('pdo_odbc'))->info();
++$info = ob_get_clean();
++if (strpos($info, 'ibm-db2-zos') === false) {
++    die('skip native Db2 for z/OS PDO_ODBC only');
++}
++?>
++--FILE--
++<?php
++// Neither a valid DSN nor a CLI initialization file is needed for this test.
++putenv('DSNAOINI=/__pdo_odbc_zos_driver_missing__/must-not-be-read.ini');
++foreach ([
++    ['odbc:', true, PDO::ERRMODE_EXCEPTION],
++    ['odbc:DSN=__zos_driver_must_not_open__', 'zos_driver_key', PDO::ERRMODE_SILENT],
++    ['odbc:__zos_driver_must_not_open__', true, PDO::ERRMODE_WARNING],
++] as [$dsn, $persistent, $mode]) {
++    try {
++        new PDO($dsn, '', '', [PDO::ATTR_PERSISTENT => $persistent, PDO::ATTR_ERRMODE => $mode]);
++        echo "unexpected connection\n";
++    } catch (PDOException $e) {
++        echo $e->getCode(), "\n";
++        var_dump(strpos($e->getMessage(), 'Native Db2 PDO_ODBC persistent connections are not supported') !== false);
++    }
++}
++?>
++--EXPECT--
++IM001
++bool(true)
++IM001
++bool(true)
++IM001
 +bool(true)

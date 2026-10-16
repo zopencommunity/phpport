@@ -1,156 +1,209 @@
-# Native Db2 PDO_ODBC on z/OS (experimental)
+# Native Db2 PDO_ODBC on z/OS
 
-The standard build leaves PDO_ODBC **disabled** (`ZOPEN_PDO_ODBC=no`).
-The PHP 8.2.34 CI/runtime fix does not change that default. The older opt-in
-shared implementation was built, installed and loaded with PHP 8.2.13 and
-Clang 21; enabled-mode acceptance on 8.2.34 and real connection, LOB and
-transaction validation remain **outstanding**. Loading the driver is not
-proof of working database access. Built-in multi-SAPI delivery remains a
-separate candidate, not a capability established by the SDK-free CI run.
+## Status and delivery model
 
-## Build modes and prerequisites
+This PHP **8.2.34 candidate** builds PDO_ODBC into CLI, the CGI/FastCGI SAPI and
+phpdbg by default. Applications use ordinary `new PDO('odbc:...', ...)`; no
+`extension=pdo_odbc.so`, matching-CLI import deck or PHP rebuild is needed at
+installation time. Remove any obsolete shared-extension setting when using a
+built-in package.
 
-| `ZOPEN_PDO_ODBC` | Behaviour |
+**Not yet accepted against live Db2.** The public STABLE_phpport_462 release
+has only SQLite; it is not this native candidate. A successful compile,
+registration check or database-free test does not prove working connections,
+Unicode data, LOBs or transactions. Issue #39 must remain open until the live
+CLI and web acceptance checks pass with an approved disposable schema. FPM
+and Apache module builds are not validated; CGI/FastCGI web delivery is the
+tested SAPI path, not proof of FPM support.
+
+"Static" below means built into each PHP executable. It does **not** mean
+bundling or statically linking IBM's proprietary Db2 runtime.
+
+## Build modes and private SDK
+
+| `ZOPEN_PDO_ODBC` | Behavior |
 | --- | --- |
-| `no` (default) | No native Db2 PDO_ODBC support; standard build unchanged. |
-| `shared` | Built-in PDO plus a shared PDO_ODBC module; disables CGI and phpdbg. |
-| `static` | Opt-in built-in PDO_ODBC; pending separate validation. |
+| `static` (default) | Built-in PDO_ODBC in each enabled SAPI. |
+| `no` | Explicit SDK-free opt-out; no native Db2 driver. |
+| `shared` | Advanced matching-CLI-only module; incompatible SAPIs rejected. |
 
-The native Db2 SDK is site-supplied proprietary IBM software, **not a zopen
-package dependency**. Obtain it through your Db2 administrator; do not commit
-or redistribute IBM headers, side decks, credentials or site configuration.
-This path uses native Db2 for z/OS ODBC, not the distributed LUW `clidriver`.
+Native Db2 uses site-supplied `SDSNC.H` headers and the 64-bit
+`SDSNMACS(DSNAO64C)` import side deck, not the LUW `clidriver`, unixODBC or
+`-ldb2`. Follow the [python-ibmdb native installation reference][python-install]
+and its [extraction/build code][python-build], with your DBA's actual dataset
+names. Preserve header layout and original side-deck records. Never commit
+or redistribute IBM SDK inputs, credentials, live qualifiers or site config.
 
-Configure requires both environment variables for either enabled mode:
+SDK discovery, in priority order:
 
-- `PDO_ODBC_DB2_INCLUDE`: absolute USS directory containing the native Db2
-  headers, including `sqlcli1.h` and its related headers.
-- `PDO_ODBC_DB2_SIDEDECK`: absolute USS filename of the 64-bit native
-  `DSNAO64C` import side deck (`.x`), not a load module or directory.
+1. Explicit `PDO_ODBC_DB2_INCLUDE` and `PDO_ODBC_DB2_SIDEDECK` paths.
+2. `PHP_DB2_SDK_ROOT/include` and `PHP_DB2_SDK_ROOT/lib/dsnao64c.x`.
+3. `${ZOPEN_ROOTFS}/etc/php-db2-sdk/include` and its `lib/dsnao64c.x`.
 
-Use the [python-ibmdb native z/OS installation reference][python-install] and
-its [build/extraction code][python-build] as preparation references: extract
-headers from the site's `SDSNC.H` data set, preserving the header layout and
-include relationships. Export `DSNAO64C` from `SDSNMACS` using TSO `OPUT` to a
-USS `.x` file, preserving its records and usable encoding. Use your site's
-actual data set names and IBM procedures. Do not copy the Python binary module
-(or another PHP binary module); these references describe SDK/runtime setup,
-not PHP binary compatibility.
-
-Example (all paths are placeholders; run from this repository):
+The site SDK link is private configuration, not repository content. A missing
+SDK fails the native build rather than silently omitting the driver. Use
+`ZOPEN_PDO_ODBC=no` deliberately when building without it.
 
 ```sh
-export ZOPEN_PDO_ODBC=shared
-export PDO_ODBC_DB2_INCLUDE=/absolute/path/to/native-db2/include
-export PDO_ODBC_DB2_SIDEDECK=/absolute/path/to/native-db2/DSNAO64C.x
-zopen-build -v
+# Optional explicit root; unnecessary when the site link is provisioned.
+export PHP_DB2_SDK_ROOT=/private/path/to/native-db2-sdk
+zopen-build -v --no-set-active
 ```
 
-Run `zopen-build` in the foreground. Use `ZOPEN_PDO_ODBC=static` only for
-separate static-mode validation; unset the variable or set it to `no` for the
-standard build. When changing modes or SDK paths in an existing checkout,
-use a clean build (`zopen-build -v -f`); cached configuration otherwise retains
-the previous options.
+Run builds in the foreground. Use a private `TMPDIR` for manual builds on a
+CI account; older tools share a `${LOGNAME}.pipe` otherwise. When changing
+mode or SDK paths, rebuild with `zopen-build -v -f`; cached mismatches are
+rejected. Only clean up servers belonging to the isolated test checkout.
 
-## Deliver and load the matching pair
+The SDK ABI probe uses the actual headers without calling Db2. The supported
+native ABI has 64-bit pointers but **32-bit handles, SQLLEN and SQLULEN**;
+do not substitute LUW/unixODBC LP64 types. No SDK input files belong in the
+installed package.
 
-Shared mode uses native linking against the **matching PHP CLI import deck**.
-The module must be built and delivered **with its matching PHP core**. It is
-not an add-on that can be loaded into an old stock PHP installation, even if
-the PHP version string matches. Keep the CLI and module from the same build.
-CGI/phpdbg are disabled in this mode; their compatibility is not established.
+## Runtime configuration
 
-At runtime:
+Users need their licensed native Db2 runtime, not SDK headers. Have the DBA
+provide:
 
-- Put the matching PHP installation's `bin` directory in `LIBPATH` so the
-  module can resolve its PHP executable imports. For an uninstalled build,
-  this is the matching source tree's `sapi/cli` directory.
-- Set `STEPLIB` to the site's required Db2 load libraries (typically
-  `SDSNEXIT`, `SDSNLOAD`, `SDSNLOD2`), using administrator-approved qualifiers
-  and ordering. `LIBPATH` does not replace `STEPLIB`.
-- Set `DSNAOINI` to the site's native ODBC initialization file.
+- `STEPLIB` with the approved Db2 load-library concatenation (commonly
+  `SDSNEXIT`, `SDSNLOAD`, `SDSNLOD2`), unless the required modules are supplied
+  through the site's normal loader configuration.
+- `DSNAOINI` naming the approved native ODBC initialization file.
+- A native datasource/location and authorization suitable for the application.
 
-A load-only check, using absolute paths to artifacts from the same build:
+Set runtime variables in the trusted process environment **before PHP starts**.
+For web applications, configure the CGI/FastCGI launcher or service manager;
+do not take connection settings from HTTP input. `LIBPATH` does not replace
+Db2 `STEPLIB`. The default built-in mode does not need a CLI-specific LIBPATH.
+
+### DSNAOINI bytes and application encoding
+
+The initialization file requires **EBCDIC IBM-1047 bytes and T=off**. Retagging
+never converts ASCII/UTF-8 bytes. Convert a separate input of known encoding,
+verify the actual output and keep the original private:
 
 ```sh
-export LIBPATH="/absolute/path/to/matching-php/bin${LIBPATH:+:${LIBPATH}}"
-/absolute/path/to/matching-php/bin/php -n \
-  -d extension=/absolute/path/to/matching-module/pdo_odbc.so --ri pdo_odbc
+iconv -f ISO8859-1 -t IBM-1047 /private/odbc.ini.input > /private/odbc.ini.ebcdic
+chtag -b /private/odbc.ini.ebcdic
+export DSNAOINI=/private/odbc.ini.ebcdic
 ```
 
-Static mode does not load a separate extension; it still needs the Db2 runtime
-configuration. Do not infer static validation from the shared-mode load proof.
+Use `-f UTF-8` for UTF-8 input. Avoid a second automatic conversion. Binary
+or mixed IBM-1047 tagging with T=off is appropriate; an EBCDIC text tag can
+trigger unwanted conversion. Protect both initialization and trace files.
 
-## DSNAOINI: bytes matter
+Application-buffer encoding is a **different** setting. PHP strings are bytes;
+configure the native CLI application CCSID with the DBA for the application's
+encoding. The Python reference uses `CURRENTAPPENSCH=ASCII`, `FLOAT=IEEE` and
+`MULTICONTEXT=2`, with RRSAF attachment in the subsystem stanza; these are
+reference settings, not universally PHP-verified requirements. In particular,
+a UTF-8 round trip alone can hide incorrect server-side transcoding. The live
+suite creates a Unicode table and verifies `HEX(TXT)` as well as fetched bytes.
 
-Follow the [IBM Db2 ODBC Guide][ibm-odbc] and coordinate subsystem, plan,
-authorization and attachment settings with your Db2 administrator. The
-python-ibmdb reference uses `CURRENTAPPENSCH=ASCII`, `FLOAT=IEEE` and
-`MULTICONTEXT=2` in `[COMMON]`, with `MVSATTACHTYPE=RRSAF` in the subsystem
-stanza. These are Python-reference settings, **not universally verified PHP
-requirements** or a substitute for site configuration.
+`PDO::ODBC_ATTR_ASSUME_UTF8=true` is **not** a native CCSID setting: its
+UTF8/UCS2 conversion code is Windows-only. Native connection/statement setters
+and constructor options reject true with `IM001`; false is allowed. Correctly
+configured UTF-8 narrow-character buffers still require live acceptance.
 
-The initialization file must contain **EBCDIC IBM-1047 bytes**. A tag alone
-never converts ASCII/UTF-8 contents. For example, convert a separate input
-file whose actual encoding is ISO8859-1:
+### Connection-free checks
 
 ```sh
-iconv -f ISO8859-1 -t IBM-1047 /absolute/path/to/odbc.ini.input \
-  > /absolute/path/to/odbc.ini.ebcdic
-chtag -b /absolute/path/to/odbc.ini.ebcdic
-export DSNAOINI=/absolute/path/to/odbc.ini.ebcdic
-chtag -p "$DSNAOINI"
+/path/to/candidate/bin/php -n -r 'var_dump(PDO::getAvailableDrivers());'
+/path/to/candidate/bin/php -n --ri pdo_odbc
 ```
 
-Use `-f UTF-8` instead if the input is UTF-8. Ensure the output contains the
-converted bytes, without an additional automatic conversion. The reference
-requires **T=off**: binary tagging as above, or mixed IBM-1047 tagging
-(`chtag -m -c IBM-1047 "$DSNAOINI"`). Do not use a text tag that triggers
-conversion; the Python reference warns of S0C4 abends with text tagging.
+Both `odbc` and `sqlite` should be registered. This proves availability only,
+not a successful call into Db2.
 
-## Tests, limitations and diagnosis
+## Native data and safety behavior
 
-Optional targeted tests (same SDK/runtime environment as above):
+- Forward fetching uses `SQLFetch`, matching the native Python LOB approach.
+  Scroll offsets are checked for the native signed 32-bit API only where used.
+- Distinct native `SQL_BLOB` uses binary binding and raw binary result requests.
+  Standard SQL_BINARY/VARBINARY retain PDO_ODBC's existing hexadecimal result
+  contract. Confirm the native metadata/result behavior with the live suite.
+- Inputs use unknown-length data-at-execution, including nonstat streams and
+  the current stream offset. Empty input sends an explicit zero-length put.
+  Failed reads/puts stop immediately; native lengths are checked before casts.
+- Output/input-output buffers retain a capacity independent of the returned
+  indicator. Oversized/truncated values fail before an out-of-bounds copy.
+- Native result readers reject ambiguous final lengths and short truncated
+  character chunks instead of copying stale/padded data. The live Unicode/
+  CLOB checks must establish whether the target runtime needs further handling.
+- Missing UID/PWD components are completed independently with proper quoting;
+  key recognition is case-insensitive and respects brace-quoted values.
+- Native connections use driver cursors directly. Requests for ODBC
+  driver-manager cursor emulation are rejected before runtime access.
+- `PDO::ATTR_PERSISTENT=true` is explicitly unsupported (`IM001`) until safe
+  request-end rollback/reset is implemented and validated. Use nonpersistent
+  connections. Native driver-manager pooling is also disabled.
+
+## Live Db2 acceptance
+
+Use **only an approved disposable schema**. The suite creates a uniquely named
+owned table containing Unicode text, BLOB and CLOB columns; it drops that table
+on completion. Your DBA may need to provision database/tablespace permissions,
+LOB auxiliary-object support, package binds and multi-connection authorization.
+It never grants privileges, binds packages or changes site configuration.
+
+Create a private environment file, using site values rather than these
+placeholders, and restrict its access:
 
 ```sh
-TESTS=ext/pdo_odbc NO_INTERACTION=1 REPORT_EXIT_STATUS=1 zopen-build -v
+export STEPLIB='APPROVED.EXIT:APPROVED.LOAD:APPROVED.LOD2'
+export DSNAOINI=/private/native-odbc.ini.ebcdic
+export PDO_ODBC_TEST_DSN='odbc:DSN=APPROVED_TEST_LOCATION'
+# USER/PASS can be omitted for administrator-approved trusted authentication.
+export PDO_ODBC_TEST_USER='private-test-user'
+export PDO_ODBC_TEST_PASS='private-test-password'
+export PDO_ODBC_TEST_SCHEMA=APPROVED_DISPOSABLE_SCHEMA
+export PHP_DB2_TEST_ALLOW_WRITES=yes
+# Ensure native Db2 trace and LE dump destinations are private, too.
 ```
 
-The focused suite currently has 8 passes, 85 skips and no failures without
-a database DSN; skips are not counted as passes. `sh tests/buildenv.sh` checks
-the opt-in configuration and test-summary accounting without requiring Db2.
+Do not commit that file or place passwords in command arguments/chat. Run:
 
-Most database tests skip without the test suite's environment-provided DSN
-and connection settings (`PDO_ODBC_TEST_DSN`, `PDO_ODBC_TEST_USER`, and
-`PDO_ODBC_TEST_PASS`). **Use only a disposable test database/schema**: the
-upstream PDO tests create and modify tables. Supply settings privately; never
-commit credentials, live site qualifiers or sensitive logs. Skips and a
-successful load do not validate connections, LOB round trips or
-commit/rollback; those checks remain outstanding.
+```sh
+sh tests/db2-acceptance.sh /private/db2-test-env.sh \
+  /path/to/candidate/bin/php /path/to/candidate/bin/php-cgi
+```
 
-Native-path constraints include disabled ODBC driver-manager connection
-pooling, forward fetching via `SQLFetch` for LOB handling, and the native
-**32-bit `SQLLEN` ABI even in a 64-bit process**. Do not assume unixODBC ABI,
-scrollable LOB cursors or pooling behaviour.
+The wrapper uses private logs/working directories, bounded process timeouts,
+and token-protected loopback CGI request variables. It does not expose a web
+listener. This tests controlled CGI execution, not an Apache/FastCGI frontend
+or its authentication/environment setup; the customer's real web deployment
+must also be checked under its actual service identity. It prints no credentials, DSNs, SQL or vendor messages. Object
+manifests are fully written/flushed before connecting and atomically updated.
+They are retained privately if cleanup fails or a process is killed;
+have the DBA remove only the listed test-owned objects in that case.
 
-- Loader/import errors: check that PHP and module are a matching build and
-  that `LIBPATH` and Db2 `STEPLIB` are correct.
-- SQLCODE `-805`: ask the DBA to check native ODBC package/plan binds and the
-  site's customized `SDSNSAMP(DSNTIJCL)` job, plus execution authorization.
-- For native diagnostics, use IBM's `APPLTRACE`/`DIAGTRACE` guidance. Protect
-  trace files, which can contain SQL, data and connection information.
-- [IBM APAR PH41045][ph41045] concerns minimum maintenance cited for IBM Python
-  support. Have the DBA assess applicability; it is **not an unconditional,
-  PHP-verified prerequisite**.
+Required checks cover real native connections, rejected unsafe persistence,
+prepared parameters, Unicode server bytes, raw binary/CLOB values, NULL versus
+empty, buffer boundaries, remaining BLOB/CLOB stream offsets, unknown-length
+BLOB/CLOB streams, independent connections, commit,
+rollback, autocommit restoration and destruction rollback in **CLI and CGI**.
+A missing approval/schema/DSN/runtime/driver refuses with exit 77, not a pass.
+No real Db2 acceptance has been performed without those private inputs.
 
-## References
+The build separately runs DB-free driver/parameter/fetch mocks, actual-SDK ABI
+checks, safe refusal tests and SAPI registration. The focused upstream suite
+allows zero failures but skips database tests without its DSN; those skips are
+not database acceptance. Its Microsoft Access-specific fixture is Windows-only.
+Full/mixed PHP runs retain the unchanged allowance of 112; interrupted runners
+always fail explicitly regardless of that baseline.
 
-- [IBM Db2 for z/OS ODBC Guide and Reference][ibm-odbc]
-- [IBM Python support for Db2 for z/OS](https://www.ibm.com/docs/en/db2-for-zos/12.0.0?topic=zos-python)
-- [IBM ODBC troubleshooting, binding, tagging and tracing](https://www.ibm.com/docs/api/v1/content/SSEPEK_12.0.0/odbc/src/tpc/db2z_cd4odbcpython.html?lang=en)
-- [IBM APAR PH41045][ph41045]
-- [python-ibmdb](https://github.com/ibmdb/python-ibmdb), especially its
-  [native z/OS installation instructions][python-install].
+## Diagnosis and references
+
+- Loader failures: check approved runtime libraries and process startup env.
+- SQLCODE `-805`: ask the DBA about package/plan binds and the customized
+  `SDSNSAMP(DSNTIJCL)` job. Do not run it automatically from an application test.
+- Native `APPLTRACE`/`DIAGTRACE` can contain SQL, data and connection details;
+  keep destinations private and do not publish raw logs.
+- [APAR PH41045][ph41045] is maintenance cited by the Python reference; DBA
+  assessment is needed rather than asserting a universal PHP prerequisite.
+
+[IBM Db2 ODBC Guide][ibm-odbc] and [python-ibmdb][python-install] are preparation
+references, not substitutes for PHP customer validation.
 
 [ibm-odbc]: https://www.ibm.com/support/knowledgecenter/SSEPEK/pdf/db2z_12_odbcbook.pdf
 [ph41045]: https://www.ibm.com/support/pages/apar/PH41045

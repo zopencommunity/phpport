@@ -27,7 +27,7 @@ See the [zopen porting guide](https://zopen.community/#/Guides/Porting) for more
 
 # Documentation
 
-- [Native Db2 PDO_ODBC on z/OS (experimental, opt-in)](docs/pdo-odbc.md)
+- [Native Db2 PDO_ODBC build, runtime setup and acceptance](docs/pdo-odbc.md)
 
 # Runtime and CI status
 
@@ -41,9 +41,25 @@ Interrupted/crashed test runners now retain partial results and fail explicitly,
 including crashes after a printed summary; they cannot report misleading zero
 totals or hide under the ordinary failure allowance.
 
-This CI/runtime fix does not enable Db2 by default or claim working database
-operations. Built-in multi-SAPI PDO_ODBC delivery is a separate candidate;
-real Db2 query, LOB and transaction acceptance is still outstanding.
+## Native Db2 delivery candidate - issue #39
+
+This branch defaults to building **PDO_ODBC into CLI, CGI/FastCGI and phpdbg**.
+No extension setting or CLI-specific module is required. CI discovers its
+private SDK through `${ZOPEN_ROOTFS}/etc/php-db2-sdk`; SDK-free source builds
+must explicitly set `ZOPEN_PDO_ODBC=no`. IBM headers, the import side deck,
+credentials and site configuration are never distributed.
+
+**Candidate, not a Db2-validated release:** the published STABLE_phpport_462
+package still has only the SQLite PDO driver. The native candidate builds and
+packages successfully, but connections, Unicode, prepared LOBs and transactions
+still require the approved live tests described in
+[the acceptance guide](docs/pdo-odbc.md#live-db2-acceptance).
+
+The candidate hardens native BLOB handling, streamed parameters, buffer/length
+bounds and credential completion. Persistent connections and the Windows-only
+`ODBC_ATTR_ASSUME_UTF8` conversion flag fail explicitly rather than pretending
+to support unsafe behavior. Registration and skipped database tests do not
+establish customer acceptance; issue #39 remains open.
 
 # Contributing
 Contributions are welcome! Please follow the [zopen contribution guidelines](https://github.com/zopencommunity/meta/blob/main/CONTRIBUTING.md).

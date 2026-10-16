@@ -67,16 +67,35 @@ the native suite, including SDK-free builds.
 
 ## Native Db2 PDO_ODBC - issue #39
 
-`pdo_odbc-zos.patch` retains the opt-in `ibm-db2-zos` flavour using private,
-site-supplied headers and the 64-bit DSNAO64C side deck. Native handles and
-SQLLEN widths are preserved, driver-manager pooling is disabled, and forward
-LOB fetching uses SQLFetch. Shared mode imports the matching CLI core; it is
-not interchangeable with CGI/phpdbg or an unrelated PHP installation.
+`pdo_odbc-zos.patch` implements the native `ibm-db2-zos` flavour. This branch
+defaults to built-in PDO_ODBC in CLI, CGI/FastCGI and phpdbg, with private SDK
+discovery and explicit SDK-free opt-out. Static means built-in PHP code, not
+redistribution of IBM's runtime. Advanced shared mode remains matching-CLI-only;
+it rejects FPM, CGI/phpdbg and other incompatible SAPI selections.
 
-This CI hotfix **does not enable PDO_ODBC by default** or claim Db2 production
-acceptance. Built-in multi-SAPI delivery remains a separate candidate pending
-real connections, prepared statements, LOBs and transactions. No IBM SDK,
-credentials or site configuration are included.
+Native handles/SQLLEN retain their actual 32-bit SDK types in LP64. Forward
+LOB fetch uses SQLFetch. Native BLOB input/results use binary requests; standard
+binary types retain PDO_ODBC's existing result contract. Native data-at-exec,
+empty/error/nonstat/seeked streams, capacity versus indicators and narrowing
+bounds are hardened. Pure helpers and extracted real driver/statement functions
+are exercised by database-free C mocks; an actual-SDK probe verifies widths
+without calling Db2.
+
+Credential completion independently handles missing top-level UID/PWD keys
+with case-insensitive brace-aware parsing. Native connections avoid manager
+pooling/cursor-library calls. Unsupported cursor emulation, persistence and the
+Windows-only wide UTF8-conversion flag reject explicitly before runtime access.
+Autocommit state changes only after successful API calls (including success
+with information). Metadata/output bounds are checked before string copies.
+Ambiguous native result lengths fail rather than returning stale/padded data.
+
+The live CLI/CGI harness requires explicit write approval, a protected schema
+and private configuration. Recovery manifests are checked/flushed before any
+DB action and atomically updated; logs/default cwd stay private. Refusal and
+manifest-failure paths, including CGI token checks, are tested without Db2.
+The Microsoft Access fixture is now Windows-only: it is not a native Db2 test.
+No IBM SDK, credentials or site configuration are included. **Live Db2 data
+acceptance remains outstanding; this candidate is not a production claim.**
 
 ## Validation
 
@@ -86,6 +105,13 @@ suite recorded **11,469 passes, 7,059 skips and 96 failures**, with no S0C4
 and `testRunIncomplete:0`, against the unchanged allowance of **112**.
 Meeting that gate does not establish that all remaining failures are harmless.
 
-The older opt-in shared PDO_ODBC load proof was for PHP 8.2.13 (8 passes,
-85 skips, no failures without a DSN); it does not establish 8.2.34 database
-functionality. See [native PDO_ODBC setup](../docs/pdo-odbc.md) for limits.
+The first default native build/install/package on 8.2.34 also exited **0**:
+11,481 passes, 7,135 skips, 93 failures and one BORK (94 reporter failures,
+allowance unchanged at 112). That BORK was the Access-only fixture attempting
+a foreign backend during SKIPIF. After its platform guard, the focused native
+suite passed **10 tests, 90 skips, zero failures/BORKs**, with zero allowance.
+CLI, an actual CGI invocation and phpdbg all register `odbc` and `sqlite`.
+The SDK probe confirms 8-byte pointers/SQLPOINTER and 4-byte handles/lengths.
+These are build/protocol/availability results, not live data acceptance.
+
+See [native PDO_ODBC setup and acceptance](../docs/pdo-odbc.md) for limits.
