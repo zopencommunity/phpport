@@ -49,6 +49,14 @@ are replaced with allocated ephemeral ports, propagated to clients/children.
 No tests are skipped to hide these differences, and site TCP/IP policy is
 not changed. PHP 8.2.34's new UDP select waits are preserved.
 
+The invalid-filename `fileinfo/bug68996.phpt` change is an ASCII Git binary
+hunk, preserving its exact UTF-8 expected bytes across fresh z/OS checkouts
+of this ISO8859-1 working-tree repository. To regenerate it, mark that path
+`-diff` in the source repository's `.git/info/attributes` and use
+`git diff --binary HEAD`; do not replace its Unicode assertions with loose
+wildcards. Verify patch replay from a fresh Git checkout, not only from the
+pre-commit working files.
+
 The buildenv reporter normalizes ANSI/CR output and parses real summary
 counters. Interrupted runs preserve partial outcomes, add a runner failure,
 set `testRunIncomplete:1`, and force the allowance to zero. Outer make signal
