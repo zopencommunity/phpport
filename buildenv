@@ -1,5 +1,5 @@
 # bump: php-version /PHP_VERSION="(.*)"/ https://github.com/php/php-src.git|semver:~8.2
-PHP_VERSION="8.2.13"
+PHP_VERSION="8.2.34"
 
 export ZOPEN_BUILD_LINE="STABLE"
 export ZOPEN_CATEGORIES="language"
@@ -19,10 +19,9 @@ if [ "${ZOPEN_BUILD_LINE}" = "STABLE" ]; then
   export ZOPEN_EXTRA_CONFIGURE_OPTS='--disable-opcache --disable-phar --without-pear --without-pcre-jit'
   export ZOPEN_COMP='CLANG'
 
-# Temporary work-around waiting for fopen_ascii function in zoslib so that configure works
-# and
-# Temporary work-around for lack of MAP_ANON support in zoslib mmap emulation
-  export ZOPEN_EXTRA_CFLAGS="-DMAP_ANON=16 -DMAP_ANONYMOUS=16"
+# Native Zend chunks and LE fiber stacks do not use a fake mmap backend.
+# Native flag 16 means __MAP_64, not anonymous storage.
+  export ZOPEN_EXTRA_CFLAGS=""
 else
   export ZOPEN_BOOTSTRAP="./buildconf"
   export ZOPEN_CONFIGURE="./configure"
@@ -53,6 +52,7 @@ export ZOPEN_CHECK_OPTS="test"
 
 zopen_pre_check()
 {
+  sh "${ZOPEN_ROOT}/tests/buildenv.sh" || exit 1
   if [ "${ZOPEN_PDO_ODBC:-no}" = "shared" ]; then
     # The module imports the running PHP executable by its DLL name (php).
     export LIBPATH="${PWD}/sapi/cli${LIBPATH:+:${LIBPATH}}"
@@ -83,32 +83,100 @@ zopen_check_results()
   chk="$1/$2_check.log"
   summary="$1/$2_summary.log"
 
-  # Use the final PHP summary, not color escapes or per-test output. Skips
-  # must not be advertised as passes in zopen's package metadata.
-  actualPasses=$(awk '/^Tests passed/{n=$4} END {print n+0}' "${chk}")
-  actualSkips=$(awk '/^Tests skipped/{n=$4} END {print n+0}' "${chk}")
-  actualFailures=$(awk '
-    /^Tests failed/{failed=$4}
-    /^Tests borked/{borked=$4}
-    /^Tests warned/{warned=$4}
-    END {print failed+borked+warned+0}' "${chk}")
+  # The final PHP summary is authoritative. If the runner crashes before
+  # both passed/failed totals, retain partial results and fail the run itself.
+  # Normalize colored output and CR-separated TEST progress prefixes first.
+  set -- $(awk -v esc="$(printf '\033')" -v cr="$(printf '\r')" '
+    {
+      gsub(esc "\\[[0-9;]*m", "")
+      count=split($0, lines, cr)
+      for (i=1; i<=count; i++) {
+        line=lines[i]
+        if (line ~ /^Tests (passed|skipped|failed|borked|warned)[[:space:]]*:[[:space:]]*[0-9]+/) {
+          kind=line
+          sub(/^Tests /, "", kind)
+          sub(/[[:space:]:].*$/, "", kind)
+          value=line
+          sub(/^[^:]*:[[:space:]]*/, "", value)
+          totals[kind]=value+0
+          seen[kind]=1
+        }
+        # A runner can crash during shutdown, after printing its summary.
+        # Child-test crashes are reported by run-tests as FAIL; an outer
+        # make exit status >=128 instead means the harness itself failed.
+        if (line ~ /^[^[:space:]]*make(\[[0-9]+\])?: \*\*\*.*Error [0-9]+/) {
+          status=line
+          sub(/^.*Error /, "", status)
+          if (status+0 >= 128 && status+0 <= 255) crashed=1
+        }
+        if (line ~ /^(PASS|SKIP|FAIL|BORK|WARN)[[:space:]]/) {
+          kind=line
+          sub(/[[:space:]].*$/, "", kind)
+          partial[kind]++
+        }
+      }
+    }
+    END {
+      incomplete=!(seen["passed"] && seen["failed"])
+      if (incomplete)
+        print partial["PASS"]+0, partial["SKIP"]+0, partial["FAIL"]+0,
+              partial["BORK"]+0, partial["WARN"]+0, 1
+      else
+        print totals["passed"]+0, totals["skipped"]+0, totals["failed"]+0,
+              totals["borked"]+0, totals["warned"]+0, crashed+0
+    }' "${chk}")
+  actualPasses=$1
+  actualSkips=$2
+  partialFailures=$3
+  partialBorks=$4
+  partialWarnings=$5
+  testRunIncomplete=$6
+  actualFailures=$((partialFailures+partialBorks+partialWarnings+testRunIncomplete))
 
-  expectedFailures=112
-  case "${TESTS:-}" in
-    ext/pdo_odbc*) expectedFailures=0 ;;
-  esac
+  # Keep the legacy allowance for full/mixed suites only. TESTS is a
+  # whitespace-separated run-tests.php argument list, not just a directory.
+  expectedFailures=$(printf '%s\n' "${TESTS:-}" | awk '
+    {
+      for (i=1; i<=NF; i++) {
+        arg=$i
+        # Options with a separate value do not select tests.
+        if (arg ~ /^(-[acdgjMpswW]|--(set-timeout|context|show-slow|temp-source|temp-target|repeat))$/) {
+          i++
+          continue
+        }
+        # Test-list files can add tests outside PDO_ODBC.
+        if (arg == "-r" || arg == "-l") {mixed=1; i++; continue}
+        if (arg ~ /^-/) continue
+        sub(/^(\.\/)+/, "", arg)
+        if (arg ~ /^ext\/pdo_odbc(\/|$)/ ||
+            arg ~ /^\/(.*\/)?ext\/pdo_odbc(\/|$)/) focused=1
+        else mixed=1
+      }
+    }
+    END {print (focused && !mixed) ? 0 : 112}')
 
+  # A runner failure must never be covered by the legacy suite allowance.
+  if [ "${testRunIncomplete}" -eq 1 ]; then
+    expectedFailures=0
+  fi
   totalTests=$((actualPasses+actualFailures))
-  echo "actualPasses:${actualPasses}"
-  echo "actualSkips:${actualSkips}"
-  echo "actualFailures:${actualFailures}"
-  echo "expectedFailures:${expectedFailures}"
-  echo "totalTests:${totalTests}"
-
-  echo "PHP Results" >${summary}
-  echo "actualFailures:${actualFailures}" >>${summary}
-  echo "expectedFailures:${expectedFailures}" >>${summary}
-  echo "totalTests:${totalTests}" >>${summary}
+  results=$(
+    echo "actualPasses:${actualPasses}"
+    echo "actualSkips:${actualSkips}"
+    echo "actualFailures:${actualFailures}"
+    echo "expectedFailures:${expectedFailures}"
+    echo "totalTests:${totalTests}"
+    echo "testRunIncomplete:${testRunIncomplete}"
+    if [ "${testRunIncomplete}" -eq 1 ]; then
+      echo "partialPasses:${actualPasses}"
+      echo "partialSkips:${actualSkips}"
+      echo "partialFailures:${partialFailures}"
+      echo "partialBorks:${partialBorks}"
+      echo "partialWarnings:${partialWarnings}"
+    fi
+  )
+  printf '%s\n' "${results}"
+  printf '%s\n' 'PHP Results' "${results}" > "${summary}"
 }
 
 zopen_get_version()

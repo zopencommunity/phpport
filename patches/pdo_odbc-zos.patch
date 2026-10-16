@@ -1,8 +1,8 @@
 diff --git a/configure.ac b/configure.ac
-index 18a46442..87b7517f 100644
+index f397417a..91d91fa4 100644
 --- a/configure.ac
 +++ b/configure.ac
-@@ -1183,7 +1183,11 @@ if test "$ac_cv_lib_crypt_crypt" = "yes"; then
+@@ -1194,7 +1194,11 @@ if test "$ac_cv_lib_crypt_crypt" = "yes"; then
    EXTRA_LIBS="-lcrypt $EXTRA_LIBS -lcrypt"
  fi
  
@@ -149,7 +149,7 @@ index 72b60419..3b0bff18 100644
    PHP_ADD_EXTENSION_DEP(pdo_odbc, pdo)
  fi
 diff --git a/ext/pdo_odbc/odbc_driver.c b/ext/pdo_odbc/odbc_driver.c
-index a9d5befd..96572ad4 100644
+index fa160bfb..b7c8513b 100644
 --- a/ext/pdo_odbc/odbc_driver.c
 +++ b/ext/pdo_odbc/odbc_driver.c
 @@ -128,10 +128,10 @@ static void odbc_handle_closer(pdo_dbh_t *dbh)
@@ -166,7 +166,7 @@ index a9d5befd..96572ad4 100644
  	dbh->driver_data = NULL;
  }
 diff --git a/ext/pdo_odbc/odbc_stmt.c b/ext/pdo_odbc/odbc_stmt.c
-index ea0dd0e5..9f9eb954 100644
+index 1df4e225..3a2ef641 100644
 --- a/ext/pdo_odbc/odbc_stmt.c
 +++ b/ext/pdo_odbc/odbc_stmt.c
 @@ -525,6 +525,7 @@ static int odbc_stmt_fetch(pdo_stmt_t *stmt,
@@ -216,7 +216,7 @@ index ea0dd0e5..9f9eb954 100644
  	return 0;
  }
 diff --git a/ext/pdo_odbc/php_pdo_odbc_int.h b/ext/pdo_odbc/php_pdo_odbc_int.h
-index 6f1b99b0..59bebe8c 100644
+index 0a453a00..94345217 100644
 --- a/ext/pdo_odbc/php_pdo_odbc_int.h
 +++ b/ext/pdo_odbc/php_pdo_odbc_int.h
 @@ -97,8 +97,18 @@

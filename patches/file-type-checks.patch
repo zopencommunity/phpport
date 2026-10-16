@@ -1,0 +1,35 @@
+diff --git a/ext/fileinfo/fileinfo.c b/ext/fileinfo/fileinfo.c
+index 63de3511..aa272dcc 100644
+--- a/ext/fileinfo/fileinfo.c
++++ b/ext/fileinfo/fileinfo.c
+@@ -407,7 +407,7 @@ static void _php_finfo_get_type(INTERNAL_FUNCTION_PARAMETERS, int mode, int mime
+ 				}
+ 
+ 				if (php_stream_stat(stream, &ssb) == SUCCESS) {
+-					if (ssb.sb.st_mode & S_IFDIR) {
++					if (S_ISDIR(ssb.sb.st_mode)) {
+ 						ret_val = mime_directory;
+ 					} else {
+ 						ret_val = (char *)magic_stream(magic, stream);
+diff --git a/sapi/cli/php_cli_server.c b/sapi/cli/php_cli_server.c
+index e326d07c..29ae2bd7 100644
+--- a/sapi/cli/php_cli_server.c
++++ b/sapi/cli/php_cli_server.c
+@@ -1467,7 +1467,7 @@ static void php_cli_server_request_translate_vpath(php_cli_server_request *reque
+ 	q = p;
+ 	while (q > buf) {
+ 		if (!php_sys_stat(buf, &sb)) {
+-			if (sb.st_mode & S_IFDIR) {
++			if (S_ISDIR(sb.st_mode)) {
+ 				const char **file = index_files;
+ 				if (q[-1] != DEFAULT_SLASH) {
+ 					*q++ = DEFAULT_SLASH;
+@@ -1475,7 +1475,7 @@ static void php_cli_server_request_translate_vpath(php_cli_server_request *reque
+ 				while (*file) {
+ 					size_t l = strlen(*file);
+ 					memmove(q, *file, l + 1);
+-					if (!php_sys_stat(buf, &sb) && (sb.st_mode & S_IFREG)) {
++					if (!php_sys_stat(buf, &sb) && S_ISREG(sb.st_mode)) {
+ 						q += l;
+ 						break;
+ 					}

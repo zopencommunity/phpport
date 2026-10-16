@@ -1,9 +1,12 @@
 # Native Db2 PDO_ODBC on z/OS (experimental)
 
 The standard build leaves PDO_ODBC **disabled** (`ZOPEN_PDO_ODBC=no`).
-The opt-in shared implementation builds, installs and loads with PHP
-8.2.13 and Clang 21, but connection, LOB and transaction validation is
-**outstanding**. Loading the driver is not proof of working database access.
+The PHP 8.2.34 CI/runtime fix does not change that default. The older opt-in
+shared implementation was built, installed and loaded with PHP 8.2.13 and
+Clang 21; enabled-mode acceptance on 8.2.34 and real connection, LOB and
+transaction validation remain **outstanding**. Loading the driver is not
+proof of working database access. Built-in multi-SAPI delivery remains a
+separate candidate, not a capability established by the SDK-free CI run.
 
 ## Build modes and prerequisites
 

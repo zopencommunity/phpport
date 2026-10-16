@@ -1,5 +1,5 @@
 diff --git a/ext/pcre/pcre2lib/sljit/sljitNativeS390X.c b/ext/pcre/pcre2lib/sljit/sljitNativeS390X.c
-index 716491e..d80efdf 100644
+index 8eef910c..6f77f55a 100644
 --- a/ext/pcre/pcre2lib/sljit/sljitNativeS390X.c
 +++ b/ext/pcre/pcre2lib/sljit/sljitNativeS390X.c
 @@ -24,7 +24,6 @@
@@ -10,7 +10,7 @@ index 716491e..d80efdf 100644
  
  #ifdef __ARCH__
  #define ENABLE_STATIC_FACILITY_DETECTION 1
-@@ -312,6 +311,8 @@ static SLJIT_INLINE int have_facility_static(facility_bit x)
+@@ -353,6 +352,8 @@ static SLJIT_INLINE int have_facility_static(facility_bit x)
  	return 0;
  }
  
@@ -19,7 +19,7 @@ index 716491e..d80efdf 100644
  static SLJIT_INLINE unsigned long get_hwcap()
  {
  	static unsigned long hwcap = 0;
-@@ -329,6 +330,12 @@ static SLJIT_INLINE int have_stfle()
+@@ -370,6 +371,12 @@ static SLJIT_INLINE int have_stfle()
  
  	return (get_hwcap() & HWCAP_S390_STFLE);
  }

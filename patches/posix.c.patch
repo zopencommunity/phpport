@@ -1,8 +1,8 @@
 diff --git a/ext/posix/posix.c b/ext/posix/posix.c
-index e6655f0d..f3864855 100644
+index dbc888a7..2d7ae826 100644
 --- a/ext/posix/posix.c
 +++ b/ext/posix/posix.c
-@@ -710,11 +710,15 @@ int php_posix_group_to_array(struct group *g, zval *array_group) /* {{{ */
+@@ -649,11 +649,15 @@ int php_posix_group_to_array(struct group *g, zval *array_group) /* {{{ */
  	array_init(&array_members);
  
  	add_assoc_string(array_group, "name", g->gr_name);
@@ -18,7 +18,7 @@ index e6655f0d..f3864855 100644
  	for (count = 0;; count++) {
  		/* gr_mem entries may be misaligned on macos. */
  		char *gr_mem;
-@@ -902,10 +906,14 @@ int php_posix_passwd_to_array(struct passwd *pw, zval *return_value) /* {{{ */
+@@ -851,10 +855,14 @@ int php_posix_passwd_to_array(struct passwd *pw, zval *return_value) /* {{{ */
  		return 0;
  
  	add_assoc_string(return_value, "name",      pw->pw_name);
