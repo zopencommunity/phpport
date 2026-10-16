@@ -105,12 +105,16 @@ suite recorded **11,469 passes, 7,059 skips and 96 failures**, with no S0C4
 and `testRunIncomplete:0`, against the unchanged allowance of **112**.
 Meeting that gate does not establish that all remaining failures are harmless.
 
-The first default native build/install/package on 8.2.34 also exited **0**:
-11,481 passes, 7,135 skips, 93 failures and one BORK (94 reporter failures,
-allowance unchanged at 112). That BORK was the Access-only fixture attempting
-a foreign backend during SKIPIF. After its platform guard, the focused native
-suite passed **10 tests, 90 skips, zero failures/BORKs**, with zero allowance.
-CLI, an actual CGI invocation and phpdbg all register `odbc` and `sqlite`.
+A fresh Git checkout of native candidate `8b1a857` completed the default
+build/install/package with **exit 0**, discovering the private SDK without
+mode/path overrides. Its full four-worker run recorded **11,482 passes,
+7,136 skips and 93 failures**, no BORK/S0C4 and `testRunIncomplete:0`, against
+the **unchanged allowance of 112**. The focused native suite separately passed
+**10 tests, 90 skips, zero failures/BORKs**, with zero allowance. The unsupported
+Access fixture is correctly limited to Windows; no Db2 fixture is skipped to
+hide a failure.
+
+CLI, a controlled CGI invocation and phpdbg all register `odbc` and `sqlite`.
 The SDK probe confirms 8-byte pointers/SQLPOINTER and 4-byte handles/lengths.
 These are build/protocol/availability results, not live data acceptance.
 

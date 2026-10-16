@@ -50,8 +50,10 @@ must explicitly set `ZOPEN_PDO_ODBC=no`. IBM headers, the import side deck,
 credentials and site configuration are never distributed.
 
 **Candidate, not a Db2-validated release:** the published STABLE_phpport_462
-package still has only the SQLite PDO driver. The native candidate builds and
-packages successfully, but connections, Unicode, prepared LOBs and transactions
+package still has only the SQLite PDO driver. A fresh Git CI-host native
+build/install/package exited **0**: **11,482 passes, 7,136 skips, 93 failures**
+within the unchanged allowance of 112, without S0C4. Connections, Unicode,
+prepared LOBs and transactions
 still require the approved live tests described in
 [the acceptance guide](docs/pdo-odbc.md#live-db2-acceptance).
 
