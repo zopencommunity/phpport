@@ -63,6 +63,30 @@ sh tests/validate-install.sh /absolute/candidate/root static 8.2.34
 The normal native delivery target is `static`, including CGI and phpdbg.
 No production PHP activation is necessary to run these checks.
 
+## Approved read-only attachment probe
+
+A local operator-approved probe used existing project initialization/runtime
+settings through private copies and process-local environment variables only.
+Original configuration files and site configuration were not changed. Native
+runtime loading succeeded after supplying the project's runtime-library setting.
+A private INI correction aligned its subsystem stanza with the existing
+four-character subsystem ID; the prior version label had selected CAF defaults
+rather than the intended RRSAF attachment.
+
+The corrected probe reached **RRS CREATE THREAD**, but `SQLAllocHandle(DBC)`
+failed with **SQLSTATE 58004, RC 08, reason 00F30034**. IBM documents this as a
+missing configured plan or lack of execution authority for that plan. The DBA
+must confirm the approved plan and authorization; no bind, grant, subsystem
+restart or table write was attempted. **The connection did not complete and
+the prepared constant SELECT did not run.** CGI/database data acceptance is
+still outstanding.
+
+Native SQLSTATE bytes were EBCDIC even with ASCII application encoding; private
+decoding was required to interpret the exception. Diagnostic normalization in
+the candidate remains a follow-up, not evidence of working data operations.
+
+[IBM 00F30034 explanation](https://www.ibm.com/docs/api/v1/content/SSEPEK_12.0.0/codes/src/tpc/00f30034.html?parsebody=true&lang=en)
+
 ## Required live acceptance inputs
 
 Have the DBA/operator provide a **private trusted environment file**, not
