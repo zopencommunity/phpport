@@ -97,6 +97,17 @@ The Microsoft Access fixture is now Windows-only: it is not a native Db2 test.
 No IBM SDK, credentials or site configuration are included. **Live Db2 data
 acceptance remains outstanding; this candidate is not a production claim.**
 
+## Installed-package gate
+
+The generated `install_test.sh` now embeds SDK-free checks rather than
+unconditionally returning success. Built-in delivery verifies installed CLI,
+real CGI execution and phpdbg with `-n`, native driver registration/flavor,
+version, small SQLite binary operations, PCRE, fibers and allocator accounting.
+It never constructs an ODBC connection. The build runs this gate after install,
+before packaging; it fails for missing ODBC or an incorrect version. Setup and
+acceptance documents are included so the delivered README links work offline.
+SDK-free and matching-CLI-only shared modes have separate checks.
+
 ## Validation
 
 A foreground `zopen-build` on the CI host built and installed PHP 8.2.34 with

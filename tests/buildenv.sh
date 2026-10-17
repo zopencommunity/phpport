@@ -208,4 +208,23 @@ fi
   [ "$PDO_ODBC_DB2_INCLUDE" = "$tmp/explicit/include" ]
   [ "$PDO_ODBC_DB2_SIDEDECK" = "$tmp/explicit/native.x" ]
 )
+# New packages must embed real installed checks, not an unconditional exit 0.
+for mode in no static shared; do
+  (ZOPEN_ROOT="$port"; ZOPEN_PDO_ODBC="$mode"; zopen_append_to_validate_install) > "$tmp/validate.sh"
+  grep -qx "PHPPORT_INSTALL_MODE='$mode'" "$tmp/validate.sh"
+  grep -qx "PHPPORT_INSTALL_VERSION='$PHP_VERSION'" "$tmp/validate.sh"
+  grep -q 'ReflectionExtension' "$tmp/validate.sh"
+  # Native sh -n still opens a loop's input redirection while parsing.
+  : > "$tmp/modules"
+  tmp="$tmp" sh -n "$tmp/validate.sh"
+done
+mkdir "$tmp/post-install"
+printf '%s\n' '#!/bin/sh' 'exit 7' > "$tmp/post-install/install_test.sh"
+if zopen_post_install "$tmp/post-install"; then
+  echo 'Post-install probe failure was ignored' >&2; exit 1
+fi
+printf '%s\n' '#!/bin/sh' 'exit 0' > "$tmp/post-install/install_test.sh"
+(ZOPEN_ROOT="$port"; zopen_post_install "$tmp/post-install")
+cmp "$port/docs/pdo-odbc.md" "$tmp/post-install/docs/pdo-odbc.md"
+cmp "$port/docs/native-db2-validation.md" "$tmp/post-install/docs/native-db2-validation.md"
 printf '%s\n' 'buildenv checks passed'

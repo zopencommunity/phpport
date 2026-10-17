@@ -11,6 +11,9 @@ Use the zopen package manager ([QuickStart Guide](https://zopen.community/#/Guid
 zopen install php
 ```
 
+This installs the published SDK-free release, **not** the native Db2 candidate
+on this branch. See the candidate status and acceptance handoff below.
+
 # Building from Source
 
 1. Clone the repository:
@@ -28,6 +31,7 @@ See the [zopen porting guide](https://zopen.community/#/Guides/Porting) for more
 # Documentation
 
 - [Native Db2 PDO_ODBC build, runtime setup and acceptance](docs/pdo-odbc.md)
+- [Candidate validation evidence and customer handoff](docs/native-db2-validation.md)
 
 # Runtime and CI status
 

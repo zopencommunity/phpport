@@ -112,6 +112,22 @@ zopen_pre_check()
   fi
 }
 
+# Package validation must exercise installed executables, not merely return 0.
+# Embed the probe so installation needs neither a source checkout nor an SDK.
+zopen_append_to_validate_install()
+{
+  printf "PHPPORT_INSTALL_MODE='%s'\nPHPPORT_INSTALL_VERSION='%s'\n" "${ZOPEN_PDO_ODBC}" "${PHP_VERSION}"
+  cat "${ZOPEN_ROOT}/tests/validate-install.sh"
+}
+
+zopen_post_install()
+{
+  sh "$1/install_test.sh" || return $?
+  # Preserve README's relative setup/acceptance links in the delivered archive.
+  mkdir -p "$1/docs" || return $?
+  cp "${ZOPEN_ROOT}/docs/pdo-odbc.md" "${ZOPEN_ROOT}/docs/native-db2-validation.md" "$1/docs/"
+}
+
 zopen_append_to_env()
 {
   if [ "${ZOPEN_PDO_ODBC:-no}" = "shared" ]; then
