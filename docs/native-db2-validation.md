@@ -34,9 +34,23 @@ The original tested archive is
 42f12e62f44f4014639fdd6765c09043cf201fb63340a7f8f277371e6eb851ab
 ```
 
-Later packaging changes add real `install_test.sh` checks; the original archive
-above predates those checks. Do not relabel its hash as a newer artifact.
-The installed-package probe checks startup, native driver registration and
+The updated package from recipe `c48db8e` is
+`php-8.2.34.20261017_005122.zos.pax.Z`, SHA-256:
+
+```text
+84ca34ddd77d312591828eb9f0300407d6249f68f2e8f8082fbc438efeb544cd
+```
+
+Its foreground build/install/package exited 0, including the new post-install
+gate and focused 10-pass/90-skip/zero-failure suite. Extracting it on the second
+host and running its embedded `install_test.sh` also passed. All three runtime
+executables are **byte-identical** to the full-suite-validated `8b1a857` package;
+its metadata accurately reports the new focused 10/10 run, not the earlier full
+suite. Its 306-file audit matched no raw SDK input hashes. The setup/acceptance
+documents are included. Neither archive is an official production release.
+
+The original archive above predates the real install checks. Do not relabel its
+hash as a newer artifact. The installed-package probe checks startup, native driver registration and
 small engine/SQLite operations, without an SDK or Db2 calls. It is embedded
 into new packages and run after installation during the build. For an existing
 extracted candidate, run it explicitly:
