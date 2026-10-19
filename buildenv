@@ -19,17 +19,26 @@ if [ "${ZOPEN_BUILD_LINE}" = "STABLE" ]; then
   export ZOPEN_EXTRA_CONFIGURE_OPTS='--disable-opcache --disable-phar --without-pear --without-pcre-jit'
   export ZOPEN_COMP='CLANG'
 
-# Native Zend chunks and LE fiber stacks do not use a fake mmap backend.
-# Native flag 16 means __MAP_64, not anonymous storage.
+# Native Zend MM chunks and LE fiber stacks do not require anonymous mmap.
+# Do not invent MAP_ANON=16: on z/OS that is the unrelated __MAP_64 flag.
   export ZOPEN_EXTRA_CFLAGS=""
 else
   export ZOPEN_BOOTSTRAP="./buildconf"
   export ZOPEN_CONFIGURE="./configure"
 fi
-# Native Db2 is a site-supplied SDK, not a zopen package. Leave it disabled
-# unless explicitly requested; never bundle IBM headers or the side deck.
-# PDO_ODBC_DB2_INCLUDE and PDO_ODBC_DB2_SIDEDECK are consumed by configure.
-case "${ZOPEN_PDO_ODBC:-no}" in
+# Ship PDO_ODBC built into each SAPI, without a CLI-specific module dependency.
+# The SDK is site-supplied IBM software; never bundle its headers or side deck.
+# CI provisions a private SDK link under the zopen root's etc directory.
+# Explicit paths take precedence. SDK-free source builds may opt out with no.
+export ZOPEN_PDO_ODBC="${ZOPEN_PDO_ODBC:-static}"
+if [ "${ZOPEN_PDO_ODBC}" != "no" ]; then
+  PHP_DB2_SDK_ROOT="${PHP_DB2_SDK_ROOT:-${ZOPEN_ROOTFS:+${ZOPEN_ROOTFS}/etc/php-db2-sdk}}"
+  if [ -n "${PHP_DB2_SDK_ROOT}" ]; then
+    export PDO_ODBC_DB2_INCLUDE="${PDO_ODBC_DB2_INCLUDE:-${PHP_DB2_SDK_ROOT}/include}"
+    export PDO_ODBC_DB2_SIDEDECK="${PDO_ODBC_DB2_SIDEDECK:-${PHP_DB2_SDK_ROOT}/lib/dsnao64c.x}"
+  fi
+fi
+case "${ZOPEN_PDO_ODBC}" in
   no) ;;
   shared|static)
     export PDO_ODBC_DB2_INCLUDE PDO_ODBC_DB2_SIDEDECK
@@ -45,18 +54,78 @@ case "${ZOPEN_PDO_ODBC:-no}" in
     ;;
   *)
     echo "ZOPEN_PDO_ODBC must be no, shared, or static" >&2
-    return 1
+    exit 1
     ;;
 esac
 export ZOPEN_CHECK_OPTS="test"
 
+zopen_post_buildenv()
+{
+  if [ "${ZOPEN_PDO_ODBC}" != "no" ]; then
+    if [ ! -r "${PDO_ODBC_DB2_INCLUDE:-}/sqlcli1.h" ] ||
+       [ ! -s "${PDO_ODBC_DB2_SIDEDECK:-}" ]; then
+      echo 'Native PDO_ODBC requires the site Db2 headers and DSNAO64C side deck.' >&2
+      echo 'Set PHP_DB2_SDK_ROOT (or both PDO_ODBC_DB2 paths), provision etc/php-db2-sdk, or explicitly use ZOPEN_PDO_ODBC=no.' >&2
+      exit 1
+    fi
+  fi
+}
+
+zopen_pre_build()
+{
+  # zopen may reuse configure results when build options change. Never package
+  # stale no/shared/static artifacts while advertising another requested mode.
+  actual_mode=no
+  if grep -q '^#define PDO_ODBC_DB2_ZOS 1' main/php_config.h; then
+    actual_mode=static
+    if grep -q '^#define COMPILE_DL_PDO_ODBC 1' main/php_config.h; then
+      actual_mode=shared
+    fi
+  fi
+  if [ "${actual_mode}" != "${ZOPEN_PDO_ODBC}" ]; then
+    echo "Cached PDO_ODBC mode is ${actual_mode}, requested ${ZOPEN_PDO_ODBC}; rebuild with zopen-build -f." >&2
+    return 1
+  fi
+  if [ "${actual_mode}" != "no" ]; then
+    if ! grep -F -e "-I${PDO_ODBC_DB2_INCLUDE}" Makefile >/dev/null ||
+       ! grep -F -e "${PDO_ODBC_DB2_SIDEDECK}" Makefile >/dev/null; then
+      echo 'Cached Db2 SDK paths differ; rebuild with zopen-build -f.' >&2
+      return 1
+    fi
+  fi
+}
+
 zopen_pre_check()
 {
   sh "${ZOPEN_ROOT}/tests/buildenv.sh" || exit 1
+  sh "${ZOPEN_ROOT}/tests/native-driver.sh" "${PWD}" || exit 1
+  sh "${ZOPEN_ROOT}/tests/native-params.sh" "${PWD}" || exit 1
+  sh "${ZOPEN_ROOT}/tests/db2-preflight.sh" "${PWD}/sapi/cli/php" "${PWD}/sapi/cgi/php-cgi" || exit 1
   if [ "${ZOPEN_PDO_ODBC:-no}" = "shared" ]; then
     # The module imports the running PHP executable by its DLL name (php).
     export LIBPATH="${PWD}/sapi/cli${LIBPATH:+:${LIBPATH}}"
   fi
+  if [ "${ZOPEN_PDO_ODBC}" != "no" ]; then
+    sh "${ZOPEN_ROOT}/tests/native-abi.sh" "${PWD}" || exit 1
+    sh "${ZOPEN_ROOT}/tests/native-fetch.sh" "${PWD}" || exit 1
+    sh "${ZOPEN_ROOT}/tests/sapi-smoke.sh" "${PWD}" "${ZOPEN_PDO_ODBC}" || exit 1
+  fi
+}
+
+# Package validation must exercise installed executables, not merely return 0.
+# Embed the probe so installation needs neither a source checkout nor an SDK.
+zopen_append_to_validate_install()
+{
+  printf "PHPPORT_INSTALL_MODE='%s'\nPHPPORT_INSTALL_VERSION='%s'\n" "${ZOPEN_PDO_ODBC}" "${PHP_VERSION}"
+  cat "${ZOPEN_ROOT}/tests/validate-install.sh"
+}
+
+zopen_post_install()
+{
+  sh "$1/install_test.sh" || return $?
+  # Preserve README's relative setup/acceptance links in the delivered archive.
+  mkdir -p "$1/docs" || return $?
+  cp "${ZOPEN_ROOT}/docs/pdo-odbc.md" "${ZOPEN_ROOT}/docs/native-db2-validation.md" "$1/docs/"
 }
 
 zopen_append_to_env()
@@ -72,6 +141,10 @@ zopen_install_caveats()
     echo 'PDO_ODBC is available but is not enabled automatically.'
     echo 'Load pdo_odbc.so only with this matching PHP CLI build (not CGI/phpdbg).'
     echo 'Configure the site Db2 STEPLIB and EBCDIC/T=off DSNAOINI first.'
+    echo 'See https://github.com/zopencommunity/phpport/blob/main/docs/pdo-odbc.md'
+  elif [ "${ZOPEN_PDO_ODBC}" = "static" ]; then
+    echo 'PDO_ODBC is built in; no extension setting or PHP rebuild is needed.'
+    echo 'Db2 access still requires the site Db2 runtime, STEPLIB, and EBCDIC/T=off DSNAOINI.'
     echo 'See https://github.com/zopencommunity/phpport/blob/main/docs/pdo-odbc.md'
   fi
 }

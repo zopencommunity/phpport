@@ -8,19 +8,11 @@ trap 'rm -rf "$tmp"' EXIT HUP INT TERM
 ZOPEN_PDO_ODBC=no
 . "$port/buildenv"
 case "$ZOPEN_EXTRA_CONFIGURE_OPTS" in
-  *pdo-odbc*) echo 'SDK-free build unexpectedly enables PDO_ODBC' >&2; exit 1 ;;
+  *pdo-odbc*) echo 'Explicit SDK-free build unexpectedly enables PDO_ODBC' >&2; exit 1 ;;
 esac
 case "$ZOPEN_EXTRA_CFLAGS" in
   *MAP_ANON*) echo 'Build must not invent anonymous mmap flag values' >&2; exit 1 ;;
 esac
-# This CI hotfix must not promote the separate Db2 delivery candidate.
-(
-  unset ZOPEN_PDO_ODBC
-  . "$port/buildenv"
-  case "$ZOPEN_EXTRA_CONFIGURE_OPTS" in
-    *pdo-odbc*) echo 'Default build unexpectedly enables PDO_ODBC' >&2; exit 1 ;;
-  esac
-)
 
 TESTS=ext/pdo_odbc
 # A complete summary overrides individual result lines.
@@ -177,4 +169,62 @@ if (ZOPEN_PDO_ODBC=invalid; . "$port/buildenv") 2>/dev/null; then
   echo 'Invalid PDO_ODBC build mode was accepted' >&2
   exit 1
 fi
+# The normal build must include PDO_ODBC and discover the private CI SDK
+# without a job-specific flag. These are fixtures, not IBM SDK contents.
+(
+  unset ZOPEN_PDO_ODBC PHP_DB2_SDK_ROOT PDO_ODBC_DB2_INCLUDE PDO_ODBC_DB2_SIDEDECK
+  ZOPEN_ROOTFS="$tmp/root"
+  sdk="$ZOPEN_ROOTFS/etc/php-db2-sdk"
+  mkdir -p "$sdk/include" "$sdk/lib" "$tmp/source/main"
+  printf '%s\n' 'SDK header fixture' > "$sdk/include/sqlcli1.h"
+  printf '%s\n' 'SDK side-deck fixture' > "$sdk/lib/dsnao64c.x"
+  . "$port/buildenv"
+  [ "$ZOPEN_PDO_ODBC" = static ]
+  [ "$PDO_ODBC_DB2_INCLUDE" = "$sdk/include" ]
+  [ "$PDO_ODBC_DB2_SIDEDECK" = "$sdk/lib/dsnao64c.x" ]
+  zopen_post_buildenv
+  case "$ZOPEN_EXTRA_CONFIGURE_OPTS" in
+    *--with-pdo-odbc=ibm-db2-zos*) ;;
+    *) echo 'Default build does not enable built-in PDO_ODBC' >&2; exit 1 ;;
+  esac
+  printf '%s\n' '#define PDO_ODBC_DB2_ZOS 1' > "$tmp/source/main/php_config.h"
+  printf '%s\n' "CFLAGS=-I$PDO_ODBC_DB2_INCLUDE" "LIBS=$PDO_ODBC_DB2_SIDEDECK" > "$tmp/source/Makefile"
+  (cd "$tmp/source"; zopen_pre_build)
+  for bad_mode in no shared; do
+    if (cd "$tmp/source"; ZOPEN_PDO_ODBC=$bad_mode; zopen_pre_build) 2>/dev/null; then
+      echo 'Stale cached build mode was accepted' >&2; exit 1
+    fi
+  done
+  if (cd "$tmp/source"; PDO_ODBC_DB2_SIDEDECK="$sdk/other.x"; zopen_pre_build) 2>/dev/null; then
+    echo 'Stale cached SDK paths were accepted' >&2; exit 1
+  fi
+  if (PDO_ODBC_DB2_INCLUDE="$tmp/missing"; zopen_post_buildenv) 2>/dev/null; then
+    echo 'Missing native SDK was accepted' >&2; exit 1
+  fi
+  # Explicit caller paths must win over the site SDK discovery.
+  PDO_ODBC_DB2_INCLUDE="$tmp/explicit/include"
+  PDO_ODBC_DB2_SIDEDECK="$tmp/explicit/native.x"
+  . "$port/buildenv"
+  [ "$PDO_ODBC_DB2_INCLUDE" = "$tmp/explicit/include" ]
+  [ "$PDO_ODBC_DB2_SIDEDECK" = "$tmp/explicit/native.x" ]
+)
+# New packages must embed real installed checks, not an unconditional exit 0.
+for mode in no static shared; do
+  (ZOPEN_ROOT="$port"; ZOPEN_PDO_ODBC="$mode"; zopen_append_to_validate_install) > "$tmp/validate.sh"
+  grep -qx "PHPPORT_INSTALL_MODE='$mode'" "$tmp/validate.sh"
+  grep -qx "PHPPORT_INSTALL_VERSION='$PHP_VERSION'" "$tmp/validate.sh"
+  grep -q 'ReflectionExtension' "$tmp/validate.sh"
+  # Native sh -n still opens a loop's input redirection while parsing.
+  : > "$tmp/modules"
+  tmp="$tmp" sh -n "$tmp/validate.sh"
+done
+mkdir "$tmp/post-install"
+printf '%s\n' '#!/bin/sh' 'exit 7' > "$tmp/post-install/install_test.sh"
+if zopen_post_install "$tmp/post-install"; then
+  echo 'Post-install probe failure was ignored' >&2; exit 1
+fi
+printf '%s\n' '#!/bin/sh' 'exit 0' > "$tmp/post-install/install_test.sh"
+(ZOPEN_ROOT="$port"; zopen_post_install "$tmp/post-install")
+cmp "$port/docs/pdo-odbc.md" "$tmp/post-install/docs/pdo-odbc.md"
+cmp "$port/docs/native-db2-validation.md" "$tmp/post-install/docs/native-db2-validation.md"
 printf '%s\n' 'buildenv checks passed'
