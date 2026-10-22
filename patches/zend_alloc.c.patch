@@ -35,20 +35,20 @@ index 00000000..321deb4a
 +bool(true)
 +grow/shrink/free passed
 diff --git a/Zend/zend_alloc.c b/Zend/zend_alloc.c
-index 06e9d613..263f39f6 100644
+index 1ec7d7c..263f39f6 100644
 --- a/Zend/zend_alloc.c
 +++ b/Zend/zend_alloc.c
-@@ -58,6 +58,9 @@
+@@ -59,6 +59,9 @@
  #include "zend_multiply.h"
  #include "zend_bitset.h"
  #include "zend_mmap.h"
 +#ifdef __MVS__
 +# include <zos-base.h>
 +#endif
+ #include "zend_string.h"
+ #include "zend_exceptions.h"
  #include <signal.h>
- 
- #ifdef HAVE_UNISTD_H
-@@ -417,6 +420,7 @@ stderr_last_error(char *msg)
+@@ -558,6 +561,7 @@ stderr_last_error(char *msg)
  /* OS Allocation */
  /*****************/
  
@@ -56,7 +56,7 @@ index 06e9d613..263f39f6 100644
  static void zend_mm_munmap(void *addr, size_t size)
  {
  #ifdef _WIN32
-@@ -541,6 +545,8 @@ static void *zend_mm_mmap(size_t size)
+@@ -683,6 +687,8 @@ static void *zend_mm_mmap(size_t size)
  #endif
  }
  
@@ -65,7 +65,7 @@ index 06e9d613..263f39f6 100644
  /***********/
  /* Bitmask */
  /***********/
-@@ -717,6 +723,16 @@ static zend_always_inline void zend_mm_hugepage(void* ptr, size_t size)
+@@ -856,6 +862,16 @@ static zend_always_inline void zend_mm_hugepage(void* ptr, size_t size)
  
  static void *zend_mm_chunk_alloc_int(size_t size, size_t alignment)
  {
@@ -82,7 +82,7 @@ index 06e9d613..263f39f6 100644
  	void *ptr = zend_mm_mmap(size);
  
  	if (ptr == NULL) {
-@@ -767,6 +783,7 @@ static void *zend_mm_chunk_alloc_int(size_t size, size_t alignment)
+@@ -906,6 +922,7 @@ static void *zend_mm_chunk_alloc_int(size_t size, size_t alignment)
  #endif
  		return ptr;
  	}
@@ -90,7 +90,7 @@ index 06e9d613..263f39f6 100644
  }
  
  static void *zend_mm_chunk_alloc(zend_mm_heap *heap, size_t size, size_t alignment)
-@@ -789,7 +806,11 @@ static void zend_mm_chunk_free(zend_mm_heap *heap, void *addr, size_t size)
+@@ -928,7 +945,11 @@ static void zend_mm_chunk_free(zend_mm_heap *heap, void *addr, size_t size)
  		return;
  	}
  #endif
@@ -102,7 +102,7 @@ index 06e9d613..263f39f6 100644
  }
  
  static int zend_mm_chunk_truncate(zend_mm_heap *heap, void *addr, size_t old_size, size_t new_size)
-@@ -803,7 +824,7 @@ static int zend_mm_chunk_truncate(zend_mm_heap *heap, void *addr, size_t old_siz
+@@ -942,7 +963,7 @@ static int zend_mm_chunk_truncate(zend_mm_heap *heap, void *addr, size_t old_siz
  		}
  	}
  #endif
@@ -111,7 +111,7 @@ index 06e9d613..263f39f6 100644
  	zend_mm_munmap((char*)addr + new_size, old_size - new_size);
  	return 1;
  #else
-@@ -822,7 +843,11 @@ static int zend_mm_chunk_extend(zend_mm_heap *heap, void *addr, size_t old_size,
+@@ -961,7 +982,11 @@ static int zend_mm_chunk_extend(zend_mm_heap *heap, void *addr, size_t old_size,
  		}
  	}
  #endif
